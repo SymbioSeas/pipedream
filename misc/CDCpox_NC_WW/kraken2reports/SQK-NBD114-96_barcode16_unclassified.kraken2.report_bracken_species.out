@@ -1,0 +1,14 @@
+100.00	46	0	R	1	root
+100.00	46	0	D	10239	  Viruses
+100.00	46	0	D1	2731341	    Duplodnaviria
+100.00	46	0	K	2731360	      Heunggongvirae
+100.00	46	0	P	2731618	        Uroviricota
+100.00	46	0	C	2731619	          Caudoviricetes
+60.87	28	0	G	186789	            Punavirus
+30.14	13	13	S	2560452	              Punavirus RCS47
+30.73	14	14	S	10678	              Punavirus P1
+39.13	18	0	O	1978007	            Crassvirales
+39.13	18	0	F	2942964	              Intestiviridae
+39.13	18	0	F1	2942972	                Crudevirinae
+39.13	18	0	G	2948652	                  Carjivirus
+39.13	18	18	S	2955582	                    Carjivirus communis

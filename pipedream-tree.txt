@@ -1,0 +1,105 @@
+.
+├── LICENSE
+├── README.md
+├── assay_design
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-313.pyc
+│   │   ├── __init__.cpython-38.pyc
+│   │   ├── cli.cpython-313.pyc
+│   │   ├── data_retrieval.cpython-313.pyc
+│   │   ├── data_retrieval.cpython-38.pyc
+│   │   ├── hierarchical_search.cpython-313.pyc
+│   │   ├── primer_design.cpython-313.pyc
+│   │   ├── primer_probe_design.cpython-313.pyc
+│   │   ├── specificity_validation.cpython-313.pyc
+│   │   ├── target_identification.cpython-313.pyc
+│   │   ├── target_identification.cpython-38.pyc
+│   │   └── visualization.cpython-313.pyc
+│   ├── cli.py
+│   ├── data_retrieval.py
+│   ├── hierarchical_search.py
+│   ├── io_utils.py
+│   ├── primer_probe_design.py
+│   ├── specificity_validation.py
+│   ├── target_identification.py
+│   ├── utils
+│   │   └── __init__.py
+│   └── visualization.py
+├── assay_design.egg-info
+│   ├── PKG-INFO
+│   ├── SOURCES.txt
+│   ├── dependency_links.txt
+│   ├── entry_points.txt
+│   ├── requires.txt
+│   └── top_level.txt
+├── build
+│   ├── bdist.macosx-10.9-x86_64
+│   └── lib
+│       └── assay_design
+│           ├── __init__.py
+│           ├── cli.py
+│           ├── data_retrieval.py
+│           ├── io_utils.py
+│           ├── primer_design.py
+│           ├── specificity_validation.py
+│           ├── target_identification.py
+│           └── utils
+│               └── __init__.py
+├── dist
+│   ├── assay_design-0.1.0-py3-none-any.whl
+│   └── assay_design-0.1.0.tar.gz
+├── docs
+│   └── index.md
+├── misc
+│   ├── CDCpox_NC_WW
+│   │   ├── CDCpox_NC_WW_kraken-viral.zip
+│   │   ├── SQK-NBD114-96_barcode12_unclassified.fastq
+│   │   ├── SQK-NBD114-96_barcode13_unclassified.fastq
+│   │   ├── SQK-NBD114-96_barcode14_unclassified.fastq
+│   │   ├── SQK-NBD114-96_barcode15_unclassified.fastq
+│   │   ├── SQK-NBD114-96_barcode16_unclassified.fastq
+│   │   ├── kraken2reports
+│   │   │   ├── SQK-NBD114-96_barcode12_unclassified.kraken2.report.out
+│   │   │   ├── SQK-NBD114-96_barcode13_unclassified.kraken2.report.out
+│   │   │   ├── SQK-NBD114-96_barcode13_unclassified.kraken2.report_bracken_species.out
+│   │   │   ├── SQK-NBD114-96_barcode14_unclassified.kraken2.report.out
+│   │   │   ├── SQK-NBD114-96_barcode14_unclassified.kraken2.report_bracken_species.out
+│   │   │   ├── SQK-NBD114-96_barcode15_unclassified.kraken2.report.out
+│   │   │   ├── SQK-NBD114-96_barcode15_unclassified.kraken2.report_bracken_species.out
+│   │   │   ├── SQK-NBD114-96_barcode16_unclassified.kraken2.report.out
+│   │   │   └── SQK-NBD114-96_barcode16_unclassified.kraken2.report_bracken_species.out
+│   │   └── krona
+│   │       ├── krona-inputs
+│   │       │   ├── SQK-NBD114-96_barcode12_unclassified-minusb.txt
+│   │       │   ├── SQK-NBD114-96_barcode13_unclassified-minusb.txt
+│   │       │   ├── SQK-NBD114-96_barcode14_unclassified-minusb.txt
+│   │       │   ├── SQK-NBD114-96_barcode15_unclassified-minusb.txt
+│   │       │   └── SQK-NBD114-96_barcode16_unclassified-minusb.txt
+│   │       └── krona_output.html
+│   ├── CDCpox_NC_WW.zip
+│   ├── Measels, Mumps, Rubella.geneious
+│   ├── Mgene_Alignment FastTree Tree Annotations.tsv
+│   ├── Mgene_Alignment FastTree Tree.newick
+│   ├── Mgene_Alignment FastTree Tree.nex
+│   ├── Mgene_Alignment_FastTree.geneious
+│   └── Mgene_Tree_Alignment.geneious
+├── pipedream-tree.txt
+├── pyproject.toml
+├── requirements.txt
+├── scripts
+│   ├── example_workflow.py
+│   └── fetch_genome_example.py
+├── setup.cfg
+└── tests
+    ├── __pycache__
+    │   ├── test_data_retrieval.cpython-38-pytest-8.0.1.pyc
+    │   ├── test_primer_design.cpython-38-pytest-8.0.1.pyc
+    │   ├── test_specificity_validation.cpython-38-pytest-8.0.1.pyc
+    │   └── test_target_identification.cpython-38-pytest-8.0.1.pyc
+    ├── test_data_retrieval.py
+    ├── test_primer_design.py
+    ├── test_specificity_validation.py
+    └── test_target_identification.py
+
+20 directories, 83 files

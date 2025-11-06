@@ -1,0 +1,33 @@
+2025-04-10 08:10:44,530 - assay_design.cli - INFO - Target organism: taxid 662
+2025-04-10 08:10:44,530 - assay_design.data_retrieval - INFO - Fetching taxonomy information for taxid 662
+2025-04-10 08:10:47,109 - assay_design.cli - INFO - Target organism: Vibrio (662)
+2025-04-10 08:10:47,109 - assay_design.cli - INFO - Manually specified exclusion taxa: ['532']
+2025-04-10 08:10:47,109 - assay_design.data_retrieval - INFO - Fetching taxonomy information for taxid 532
+2025-04-10 08:10:47,396 - assay_design.cli - INFO - Exclusion taxon: Beijerinckia (532)
+2025-04-10 08:10:47,397 - assay_design.cli - INFO - Using gene target: 16S
+2025-04-10 08:10:47,397 - assay_design.cli - INFO - Fetching sequences for inclusion taxid 662
+2025-04-10 08:10:47,397 - assay_design.data_retrieval - INFO - Trying query: txid662[Organism] AND 16S[Gene]
+2025-04-10 08:10:47,398 - assay_design.data_retrieval - INFO - Searching for up to 40 sequences with query: txid662[Organism] AND 16S[Gene]
+2025-04-10 08:10:47,643 - assay_design.data_retrieval - INFO - Found 1 records. Fetching details...
+2025-04-10 08:12:00,290 - assay_design.data_retrieval - INFO - Fetched 1 sequences.
+2025-04-10 08:12:00,291 - assay_design.data_retrieval - INFO - Found 1 sequences with query: txid662[Organism] AND 16S[Gene]
+2025-04-10 08:12:00,291 - assay_design.cli - INFO - Retrieved 1 sequences for inclusion taxid
+2025-04-10 08:12:00,292 - assay_design.cli - INFO - Fetching sequences for 1 exclusion taxids
+2025-04-10 08:12:00,292 - assay_design.data_retrieval - INFO - Trying query: txid532[Organism] AND 16S[Gene]
+2025-04-10 08:12:00,292 - assay_design.data_retrieval - INFO - Searching for up to 20 sequences with query: txid532[Organism] AND 16S[Gene]
+2025-04-10 08:12:00,413 - assay_design.data_retrieval - INFO - Found 0 records. Fetching details...
+2025-04-10 08:12:00,413 - assay_design.data_retrieval - INFO - Trying query: txid532[Organism] AND "16S"[Gene]
+2025-04-10 08:12:00,414 - assay_design.data_retrieval - INFO - Searching for up to 20 sequences with query: txid532[Organism] AND "16S"[Gene]
+2025-04-10 08:12:00,788 - assay_design.data_retrieval - INFO - Found 0 records. Fetching details...
+2025-04-10 08:12:00,788 - assay_design.data_retrieval - INFO - Trying query: txid532[Organism] AND "16S"
+2025-04-10 08:12:00,789 - assay_design.data_retrieval - INFO - Searching for up to 20 sequences with query: txid532[Organism] AND "16S"
+2025-04-10 08:12:01,253 - assay_design.data_retrieval - INFO - Found 20 records. Fetching details...
+2025-04-10 08:12:01,811 - assay_design.data_retrieval - INFO - Fetched 19 sequences.
+2025-04-10 08:12:01,812 - assay_design.data_retrieval - INFO - Found 19 sequences with query: txid532[Organism] AND "16S"
+2025-04-10 08:12:01,812 - assay_design.cli - INFO - Retrieved 19 sequences for exclusion taxid 532
+2025-04-10 08:12:01,873 - assay_design.cli - INFO - Saved 1 inclusion sequences to ./output/sequences/inclusion_sequences.fasta
+2025-04-10 08:12:01,883 - assay_design.cli - INFO - Saved 19 exclusion sequences to ./output/sequences/exclusion_sequences.fasta
+2025-04-10 08:12:01,883 - assay_design.cli - INFO - Identifying conserved marker regions
+2025-04-10 08:12:01,883 - assay_design.cli - ERROR - Error in marker identification: hierarchical_marker_search() got an unexpected keyword argument 'no_lsh'
+2025-04-10 08:12:01,883 - assay_design.cli - INFO - Designing primers and probe for the identified marker region
+2025-04-10 08:12:01,883 - assay_design.primer_probe_design - INFO - Searching for specific regions to use as primer and probe binding sites

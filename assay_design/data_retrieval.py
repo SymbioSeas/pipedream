@@ -1,0 +1,783 @@
+# assay_design/data_retrieval.py
+
+import time
+import logging
+from typing import List, Optional, Dict, Any, Union
+from Bio import Entrez, SeqIO
+from Bio.SeqRecord import SeqRecord
+
+from .cache_manager import SequenceCacheManager
+
+# Initialize the cache manager (do this once at the module level)
+cache_manager = SequenceCacheManager()
+
+# Logger for the module
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def fetch_sequence_by_accession(accession_id: str, email: str, db: str = "nucleotide") -> SeqIO.SeqRecord:
+    """
+    Fetch a single sequence by accession from NCBI.
+    
+    Args:
+        accession_id (str): NCBI accession ID (e.g., 'NC_000913.3').
+        email (str): User's email address (required by NCBI to track usage).
+        db (str): NCBI database from which to fetch (default 'nucleotide').
+        
+    Returns:
+        SeqIO.SeqRecord: A Biopython SeqRecord containing the requested sequence.
+        
+    Raises:
+        ValueError: If no email is provided.
+        RuntimeError: If retrieval fails or sequence is empty.
+    """
+    if not email:
+        raise ValueError("You must provide a valid email address to comply with NCBI's usage policies.")
+        
+    # Set NCBI Entrez parameters
+    Entrez.email = email
+    
+    try:
+        logger.info(f"Fetching sequence for accession {accession_id} from NCBI {db} database.")
+        handle = Entrez.efetch(db=db, id=accession_id, rettype="fasta", retmode="text")
+        seq_record = SeqIO.read(handle, "fasta-pearson")
+        handle.close()
+        
+        if not seq_record or len(seq_record.seq) == 0:
+            raise RuntimeError(f"No sequence data returned for accession {accession_id}")
+            
+        logger.info(f"Successfully retrieved sequence: {seq_record.id}, length: {len(seq_record.seq)}")
+        return seq_record
+        
+    except Exception as e:
+        logger.error(f"Error fetching {accession_id} from NCBI: {str(e)}")
+        raise
+
+def fetch_sequences_for_taxid(
+    taxid: str, 
+    email: str, 
+    query_term: Optional[str] = None, 
+    max_records: int = 50,
+    db: str = "nucleotide"
+) -> List[SeqRecord]:        
+    """
+    Fetch sequences by NCBI TaxID with optional additional query terms.
+    
+    Args:
+        taxid (str): NCBI TaxID, e.g., '562' for E. coli.
+        email (str): User's email address (required by NCBI).
+        db (str): NCBI database, default 'nucleotide'.
+        max_records (int): Maximum number of sequences to fetch.
+        query_term (Optional[str]): Optional specific NCBI query term.
+            If None, will use "txid{taxid}[Organism]"
+        
+    Returns:
+        List[SeqIO.SeqRecord]: A list of retrieved SeqRecords.
+    """
+    if not email:
+        raise ValueError("Email address is required.")
+        
+    Entrez.email = email
+    
+    try:
+        # Build the search query
+        if query_term is None:
+            query_term = f"txid{taxid}[Organism] AND biomol_genomic[PROP]"
+            
+        query_term += "NOT wgs[Filter]"
+        
+        logger.info(f"Searching for up to {max_records} sequences with query: {query_term}")
+        search_handle = Entrez.esearch(db=db, term=query_term, retmax=max_records)
+        search_results = Entrez.read(search_handle)
+        search_handle.close()
+        
+        ids = search_results.get("IdList", [])
+        logger.info(f"Found {len(ids)} records. Fetching details...")
+        
+        records = []
+        if ids:
+            try:
+                fetch_handle = Entrez.efetch(db=db, id=",".join(ids), rettype="gb", retmode="text")
+                records = list(SeqIO.parse(fetch_handle, "genbank"))
+                fetch_handle.close()
+                
+                # If we got no genbank records, try FASTA format as a fallback
+                if not records:
+                    fetch_handle = Entrez.efetch(db=db, id=",".join(ids), rettype="fasta", retmode="text")
+                    records = list(SeqIO.parse(fetch_handle, "fasta"))
+                    fetch_handle.close()
+                    
+            except Exception as inner_e:
+                logger.warning(f"Error in first fetch attempt: {str(inner_e)}. Trying alternative format...")
+                try:
+                    fetch_handle = Entrez.efetch(db=db, id=",".join(ids), rettype="fasta", retmode="text")
+                    records = list(SeqIO.parse(fetch_handle, "fasta"))
+                    fetch_handle.close()
+                except Exception as fallback_e:
+                    logger.error(f"Both fetch attempts failed: {str(fallback_e)}")
+                    
+            logger.info(f"Fetched {len(records)} sequences.")
+            
+            # Validate sequences before returning
+            records = ensure_sequences_are_defined(records, email)
+            logger.info(f"Validated {len(records)} sequences with defined content.")
+            
+        return records
+        
+    except Exception as e:
+        logger.error(f"Error fetching sequences: {str(e)}")
+        raise
+                
+def fetch_gene_sequences(
+    taxid: str,
+    gene_name: str,
+    email: str,
+    max_records: int = 50,
+    allow_wgs: bool = False
+) -> List[SeqRecord]:
+    """
+    Fetch sequences for a specific gene from a specific taxon.
+    
+    Args:
+        taxid (str): NCBI TaxID
+        gene_name (str): Gene name to search for
+        email (str): User's email address
+        max_records (int): Maximum number of sequences to fetch
+        
+    Returns:
+        List[SeqRecord]: List of gene sequences
+    """
+    # Define primary and fallback queries
+    wgs_filter = "" if allow_wgs else "NOT wgs[Filter]"
+    queries = [
+        f"txid{taxid}[Organism] AND {gene_name}[Product] OR {gene_name}[Gene] OR {gene_name}[symbol] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
+        f"txid{taxid}[Organism] AND \"{gene_name}\"[Product] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
+        f"txid{taxid}[Organism] AND \"{gene_name}\" AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
+        f"txid{taxid}[Organism] AND {gene_name} AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}"
+    ]
+    
+    # Add alternative queries for common marker genes
+    if "16S" in gene_name:
+        queries.extend([
+            f"txid{taxid}[Organism] AND 16S rRNA[Keyword] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
+            f"txid{taxid}[Organism] AND 16S ribosomal RNA[Keyword] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
+            f"txid{taxid}[Organism] AND 16S[Title] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
+            f"txid{taxid}[Organism] AND small subunit ribosomal RNA AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}"
+        ])
+    
+    all_sequences = []
+    
+    for query in queries:
+        try:
+            logger.info(f"Trying query: {query}")
+            sequences = fetch_sequences_for_taxid(
+                taxid=taxid,
+                email=email,
+                query_term=query,
+                max_records=max_records
+            )
+            
+            if sequences:
+                logger.info(f"Found {len(sequences)} sequences with query: {query}")
+                all_sequences.extend(sequences)
+                break  # Stop if we found sequences
+                
+        except Exception as e:
+            logger.warning(f"Query failed: {str(e)}")
+    
+    # For 16S rRNA specifically, here are some alternative terms that might be used
+    if not all_sequences and "16S" in gene_name:
+        alternative_queries = [
+            f"txid{taxid}[Organism] AND 16S rRNA[Keyword] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
+            f"txid{taxid}[Organism] AND 16S ribosomal RNA[Keyword] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
+            f"txid{taxid}[Organism] AND 16S[Title] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
+            f"txid{taxid}[Organism] AND small subunit ribosomal RNA AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}"
+        ]
+        
+        for query in alternative_queries:
+            try:
+                logger.info(f"Trying alternative query: {query}")
+                sequences = fetch_sequences_for_taxid(
+                    taxid=taxid,
+                    email=email,
+                    query_term=query,
+                    max_records=max_records
+                ) 
+                
+                if sequences:
+                    logger.info(f"Found {len(sequences)} sequences with alternative query: {query}")
+                    all_sequences.extend(sequences)
+                    break # Stop if we found sequences
+                    
+            except Exception as e:
+                logger.warning(f"Alternative query failed: {str(e)}")
+    
+    return all_sequences    
+
+def fetch_marker_genes(
+    taxid: str,
+    email: str,
+    marker_gene: str = "16S ribosomal RNA",
+    max_records: int = 50
+) -> List[SeqRecord]:
+    """
+    Fetch common marker gene sequences for a specific taxon.
+    
+    Args:
+        taxid (str): NCBI TaxID
+        email (str): User's email address
+        marker_gene (str): Marker gene to fetch (default: 16S rRNA)
+        max_records (int): Maximum number of sequences to fetch
+        
+    Returns:
+        List[SeqRecord]: List of marker gene sequences
+    """
+    # Create specific query for the marker gene
+    query = f"txid{taxid}[Organism] AND {marker_gene}[Product]"
+    return fetch_sequences_for_taxid(
+        taxid=taxid,
+        email=email,
+        query_term=query,
+        max_records=max_records
+    )
+
+def get_taxon_info(taxid: str, email: str) -> Dict[str, Any]:
+    """
+    Get information about a specific taxon.
+    
+    Args:
+        taxid (str): NCBI TaxID
+        email (str): User's email address
+        
+    Returns:
+        Dict[str, Any]: Taxonomy information
+    """
+    if not email:
+        raise ValueError("Email address is required.")
+        
+    Entrez.email = email
+    
+    try:
+        logger.info(f"Fetching taxonomy information for taxid {taxid}")
+        handle = Entrez.efetch(db="taxonomy", id=taxid, retmode="xml")
+        records = Entrez.read(handle)
+        handle.close()
+        
+        if not records:
+            logger.error(f"No taxonomy information found for taxid {taxid}")
+            return {}
+        
+        tax_info = records[0]
+        
+        # Extract relevant information
+        result = {
+            "taxid": taxid,
+            "scientific_name": tax_info.get("ScientificName", ""),
+            "rank": tax_info.get("Rank", ""),
+            "division": tax_info.get("Division", ""),
+            "lineage": tax_info.get("Lineage", ""),
+            "genetic_code": tax_info.get("GeneticCode", {}).get("GCName", "")
+        }
+        
+        # Extract lineage with ranks
+        if "LineageEx" in tax_info:
+            result["lineage_ex"] = [
+                {
+                    "taxid": entry.get("TaxId"),
+                    "name": entry.get("ScientificName"),
+                    "rank": entry.get("Rank")
+                }
+                for entry in tax_info["LineageEx"]
+            ]
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error fetching taxonomy info for {taxid}: {str(e)}")
+        raise
+
+def get_related_taxa(
+    taxid: str, 
+    email: str, 
+    relationship: str = "sibling",
+    rank: Optional[str] = None,
+    max_results: int = 50
+) -> List[Dict[str, Any]]:
+    """
+    Find related taxa for a given taxid.
+    
+    Args:
+        taxid (str): NCBI TaxID
+        email (str): User's email address
+        relationship (str): Type of relationship ("sibling", "child", "parent")
+        rank (Optional[str]): Taxonomic rank to consider
+        max_results (int): Maximum number of results to return
+        
+    Returns:
+        List[Dict[str, Any]]: List of related taxa info
+    """
+    if not email:
+        raise ValueError("Email address is required.")
+        
+    Entrez.email = email
+    
+    try:
+        # First get the taxonomy information for our target
+        tax_info = get_taxon_info(taxid, email)
+        if not tax_info:
+            return []
+        
+        related_taxa = []
+        
+        if relationship == "sibling":
+            # Find siblings by first getting the parent
+            lineage = tax_info.get("lineage_ex", [])
+            
+            # If rank specified, find the parent at that rank
+            parent_taxid = None
+            if rank:
+                for entry in lineage:
+                    if entry.get("rank") == rank:
+                        parent_taxid = entry.get("taxid")
+                        break
+            
+            # If no parent at specified rank, use direct parent (usually genus)
+            if not parent_taxid and lineage:
+                # The direct parent is the last entry in the lineage
+                parent_taxid = lineage[-1].get("taxid")
+            
+            # If we found a parent, get its children
+            if parent_taxid:
+                # Build a query to find all species in the same genus/family
+                parent_info = get_taxon_info(parent_taxid, email)
+                parent_name = parent_info.get("scientific_name", "")
+                parent_rank = parent_info.get("rank", "")
+                
+                if parent_name:
+                    # Search for all taxa under this parent
+                    query = f"{parent_name}[{parent_rank}]"
+                    search_handle = Entrez.esearch(db="taxonomy", term=query, retmax=max_results + 1)
+                    search_results = Entrez.read(search_handle)
+                    search_handle.close()
+                    
+                    child_ids = search_results.get("IdList", [])
+                    
+                    # Filter out the original taxid
+                    child_ids = [tid for tid in child_ids if tid != taxid]
+                    
+                    # Get information for each child
+                    for child_id in child_ids[:max_results]:
+                        child_info = get_taxon_info(child_id, email)
+                        if child_info:
+                            related_taxa.append(child_info)
+        
+        return related_taxa
+        
+    except Exception as e:
+        logger.error(f"Error finding related taxa for {taxid}: {str(e)}")
+        return []
+
+def suggest_marker_genes(taxid: str, email: str) -> List[Dict[str, str]]:
+    """
+    Suggest appropriate marker genes for a given taxon.
+    
+    Args:
+        taxid (str): NCBI TaxID
+        email (str): User's email address
+        
+    Returns:
+        List[Dict[str, str]]: List of suggested marker genes with descriptions
+    """
+    # Get taxonomy info to determine the organism type
+    tax_info = get_taxon_info(taxid, email)
+    
+    if not tax_info:
+        return []
+    
+    lineage = tax_info.get("lineage", "").lower()
+    
+    # Default markers for all organisms
+    markers = [
+        {"gene": "16S ribosomal RNA", "description": "Universal prokaryotic marker gene"},
+    ]
+    
+    # Add organism-specific markers
+    if "bacteria" in lineage:
+        markers.extend([
+            {"gene": "rpoB", "description": "RNA polymerase beta subunit"},
+            {"gene": "gyrB", "description": "DNA gyrase subunit B"},
+            {"gene": "recA", "description": "Recombination protein RecA"},
+            {"gene": "groL", "description": "60 kDa chaperonin (cpn60; hsp60)"}
+        ])
+    elif "fungi" in lineage:
+        markers.extend([
+            {"gene": "ITS", "description": "Internal transcribed spacer"},
+            {"gene": "18S ribosomal RNA", "description": "Small subunit ribosomal RNA"},
+            {"gene": "28S ribosomal RNA", "description": "Large subunit ribosomal RNA"},
+            {"gene": "RPB2", "description": "RNA polymerase II second largest subunit"}
+        ])
+    elif "virus" in lineage:
+        markers.extend([
+            {"gene": "polymerase", "description": "Viral polymerase gene"},
+            {"gene": "capsid", "description": "Viral capsid protein gene"},
+            {"gene": "envelope", "description": "Viral envelope protein gene"}
+        ])
+    
+    return markers
+
+def load_local_fasta(fasta_path: str) -> List[SeqRecord]:
+    """
+    Load sequences from a local FASTA file using Biopython.
+    
+    Args:
+        fasta_path (str): Path to the local FASTA file.
+        
+    Returns:
+        List[SeqRecord]: A list of sequences parsed from the FASTA file.
+    """
+    logger.info(f"Loading local FASTA file from {fasta_path}")
+    try:
+        seq_records = list(SeqIO.parse(fasta_path, "fasta"))
+        logger.info(f"Loaded {len(seq_records)} sequences from {fasta_path}")
+        return seq_records
+    except Exception as e:
+        logger.error(f"Error loading local FASTA file {fasta_path}: {str(e)}")
+        raise
+
+def fetch_cds_sequences(
+    cds_name: str,
+    email: str,
+    max_seqs: int = 100,
+    output_file: Optional[str] = None,
+    database: str = "nuccore"
+) -> List[SeqRecord]:
+    """
+    Fetch coding sequences (CDS) with specific gene annotation from NCBI RefSeq.
+    Only downloads the annotated gene sequences, not entire genomes.
+    
+    Args:
+        cds_name (str): Name of the CDS to search for (e.g., 'amoA')
+        email (str): User's email address (required by NCBI)
+        max_seqs (int): Maximum number of sequences to fetch
+        output_file (Optional[str]): Output file path, if None will generate based on cds_name
+        database (str): NCBI database to search (default: nuccore)
+        
+    Returns:
+        List[SeqRecord]: List of retrieved CDS sequences
+    """
+    if not email:
+        raise ValueError("Email address is required for NCBI queries")
+        
+    Entrez.email = email
+    
+    # Generate output filename if not provided
+    if not output_file:
+        output_file = f"{cds_name}_refseq_{max_seqs}.fna"
+    
+    logger.info(f"Searching for CDS '{cds_name}' in NCBI (max: {max_seqs} sequences)")
+    
+    # Construct search query for entries with specified CDS
+    query = f"{cds_name}[Gene] OR {cds_name}[Product] OR {cds_name}[Function] AND CDS[Feature Key] NOT wgs[Filter]"
+    
+    try:
+        # Search for matching entries
+        search_handle = Entrez.esearch(db=database, term=query, retmax=max_seqs)
+        search_results = Entrez.read(search_handle)
+        search_handle.close()
+        
+        ids = search_results.get("IdList", [])
+        found_count = len(ids)
+        
+        if not ids:
+            logger.warning(f"No CDS entries found for '{cds_name}'")
+            
+            # Try with a more general search
+            alt_query = f"{cds_name} AND genbank[Filter]"
+            search_handle = Entrez.esearch(db=database, term=alt_query, retmax=max_seqs)
+            search_results = Entrez.read(search_handle)
+            search_handle.close()
+            
+            ids = search_results.get("IdList", [])
+            if not ids:
+                logger.warning(f"No entries found with alternative search for '{cds_name}'")
+                return []
+            
+            logger.info(f"Found {len(ids)} entries with alternative search. Will extract CDS features.")
+        
+        logger.info(f"Found {len(ids)} entries. Retrieving CDS sequences...")
+        
+        # Fetch CDS sequences
+        cds_records = []
+        
+        # Process in batches to avoid overwhelming NCBI
+        batch_size = 50
+        for i in range(0, len(ids), batch_size):
+            batch_ids = ids[i:i+batch_size]
+            logger.info(f"Fetching batch {i//batch_size + 1}/{(len(ids)-1)//batch_size + 1}...")
+            
+            # Fetch the GenBank records that contain the CDS features
+            fetch_handle = Entrez.efetch(db=database, id=",".join(batch_ids), 
+                                        rettype="gb", retmode="text")
+            gb_records = list(SeqIO.parse(fetch_handle, "genbank"))
+            fetch_handle.close()
+            
+            # Extract CDS features matching our target gene
+            for gb_record in gb_records:
+                for feature in gb_record.features:
+                    if feature.type == "CDS":
+                        try:
+                            gene_qualifiers = feature.qualifiers.get("gene", [])
+                            product_qualifiers = feature.qualifiers.get("product", [])
+                            locus_tag = feature.qualifiers.get("locus_tag", [""])[0]
+                        
+                            # Check if this CDS matches our target gene
+                            if any(cds_name.lower() in gene.lower() for gene in gene_qualifiers) or \
+                               any(cds_name.lower() in product.lower() for product in product_qualifiers) or \
+                               cds_name.lower() in locus_tag.lower():
+                               
+                                # Add error checking before extraction
+                                if feature.location is None:
+                                    logger.warning(f"Skipping CDS with undefined location in {gb_record.id}")
+                                    continue
+                                   
+                                # Extract the CDS sequence only (not the entire genome)
+                                try:
+                                    cds_seq = feature.extract(gb_record.seq)
+                                except Exception as extract_err:
+                                    logger.warning(f"Could not extract CDS sequence from {gb_record.id}: {extract_err}")
+                                    continue
+                                    
+                                # Verify sequence content is valid
+                                if not cds_seq or len(cds_seq) == 0:
+                                    logger.warning(f"Skipping empty CDS sequence in {gb_record.id}")
+                                    continue
+                            
+                                # Get organism and taxonomy information
+                                organism = gb_record.annotations.get("organism", "Unknown organism")
+                                taxonomy = gb_record.annotations.get("taxonomy", [])
+                                taxid = ""
+                            
+                                # Try to extract taxid from the source feature
+                                for src_feature in gb_record.features:
+                                    if src_feature.type == "source":
+                                        db_xrefs = src_feature.qualifiers.get("db_xref", [])
+                                        for xref in db_xrefs:
+                                            if xref.startswith("taxon:"):
+                                                taxid = xref.replace("taxon:", "")
+                                                break
+                            
+                                # Create a descriptive ID with gene, organism, and accession
+                                gene_name = gene_qualifiers[0] if gene_qualifiers else cds_name
+                            
+                                # Format description to include organism and taxid
+                                description = f"{gene_name} gene from {organism}"
+                                if taxid:
+                                    description += f" (taxid:{taxid})"
+                                
+                                # Create a unique ID that includes accession and gene
+                                record_id = f"{gb_record.id}_{gene_name}"
+                            
+                                # Add a check to ensure we're not getting overly short sequences
+                                if len(cds_seq) < 30:
+                                    logger.debug(f"Skipping very short CDS sequence: {len(cds_seq)} bp")
+                                    continue
+                                
+                                # Create the SeqRecord
+                                cds_record = SeqRecord(
+                                    seq=cds_seq,
+                                    id=record_id,
+                                    name=gene_name,
+                                    description=description
+                                )
+                            
+                                # Add extra annotations
+                                cds_record.annotations["organism"] = organism
+                                if taxid:
+                                    cds_record.annotations["taxid"] = taxid
+                            
+                                cds_records.append(cds_record)
+                        except Exception as feature_err:
+                            logger.warning(f"Error processing feature in {gb_record.id}: {feature_err}")
+                            continue      
+        
+        # Log statistics about retrieved sequences
+        if cds_records:
+            # Filter out any problematic sequences
+            valid_records = []
+            for record in cds_records:
+                try:
+                    # Verify the sequence is valid
+                    if record.seq and len(record.seq) > 0:
+                        valid_records.append(record)
+                    else:
+                        logger.warning(f"Skipping record with invalid sequence: {record.id}")
+                except Exception as e:
+                    logger.warning(f"Error validating sequence {record.id}: {e}")
+                    
+            # Use the validated records
+            cds_records = valid_records
+            
+            if not cds_records:
+                logger.warning("No valid CDS sequences remain after validation")
+                return []
+                
+                
+            avg_length = sum(len(rec.seq) for rec in cds_records) / len(cds_records)
+            logger.info(f"Retrieved {len(cds_records)} CDS sequences with average length {avg_length:.1f} bp")
+            
+            if len(cds_records) < max_seqs:
+                logger.info(f"Note: Found fewer sequences ({len(cds_records)}) than requested ({max_seqs})")
+                
+            # Ensure some diversity in taxa if possible
+            taxa_count = len(set(rec.annotations.get("taxid", "") for rec in cds_records if "taxid" in rec.annotations))
+            logger.info(f"Retrieved sequences represent {taxa_count} different taxa")
+            
+            # Save to FASTA file
+            try:
+                SeqIO.write(cds_records, output_file, "fasta")
+                logger.info(f"Saved {len(cds_records)} CDS sequences to {output_file}")
+            except Exception as write_err:
+                logger.error(f"Error writing sequences to file: {write_err}")
+        
+        return cds_records
+        
+    except Exception as e:
+        logger.error(f"Error fetching CDS sequences: {str(e)}")
+        raise    
+
+def download_genome(
+    accession_or_taxid: str,
+    email: str,
+    output_path: Optional[str] = None,
+    is_taxid: bool = False
+) -> str:
+    """
+    Download a complete genome by accession or taxid.
+    
+    Args:
+        accession_or_taxid (str): NCBI accession or taxid
+        email (str): User's email address
+        output_path (Optional[str]): Path to save the genome
+        is_taxid (bool): Whether the identifier is a taxid
+        
+    Returns:
+        str: Path to the saved genome file
+    """
+    import os
+    
+    Entrez.email = email
+    
+    try:
+        if is_taxid:
+            # Search for the reference genome for this taxid
+            logger.info(f"Searching for reference genome for taxid {accession_or_taxid}")
+            query = f"txid{accession_or_taxid}[Organism] AND refseq[Filter] AND representative[Properties]"
+            search_handle = Entrez.esearch(db="genome", term=query)
+            search_results = Entrez.read(search_handle)
+            search_handle.close()
+            
+            if not search_results.get("IdList"):
+                # Try assembly database
+                search_handle = Entrez.esearch(db="assembly", term=query)
+                search_results = Entrez.read(search_handle)
+                search_handle.close()
+                
+                if not search_results.get("IdList"):
+                    raise ValueError(f"No reference genome found for taxid {accession_or_taxid}")
+                
+                # Get the assembly details
+                assembly_id = search_results["IdList"][0]
+                handle = Entrez.esummary(db="assembly", id=assembly_id)
+                assembly_record = Entrez.read(handle)
+                handle.close()
+                
+                # Extract the accession
+                accession = assembly_record["DocumentSummarySet"]["DocumentSummary"][0]["AssemblyAccession"]
+            else:
+                # Get the genome record
+                genome_id = search_results["IdList"][0]
+                handle = Entrez.esummary(db="genome", id=genome_id)
+                genome_record = Entrez.read(handle)
+                handle.close()
+                
+                # Extract the accession
+                accession = genome_record[0].get("AssemblyAccession")
+                
+                if not accession:
+                    raise ValueError(f"Could not extract accession for taxid {accession_or_taxid}")
+        else:
+            accession = accession_or_taxid
+        
+        # Fetch the sequence
+        logger.info(f"Fetching genome for accession {accession}")
+        handle = Entrez.efetch(db="nucleotide", id=accession, rettype="fasta", retmode="text")
+        record = SeqIO.read(handle, "fasta")
+        handle.close()
+        
+        # Save to file
+        if not output_path:
+            output_path = f"{accession.replace('.', '_')}.fasta"
+        
+        SeqIO.write(record, output_path, "fasta")
+        logger.info(f"Genome saved to {output_path}")
+        
+        return output_path
+        
+    except Exception as e:
+        logger.error(f"Error downloading genome: {str(e)}")
+        raise
+        
+def ensure_sequences_are_defined(sequences: List[SeqRecord], email: str) -> List[SeqRecord]:
+    """
+    Ensure all sequences have defined content before saving.
+    
+    Args:
+        sequences: List of sequence records
+        
+    Returns:
+        List of validated sequence records
+    """
+    from Bio.Seq import UndefinedSequenceError, Seq
+    from Bio.SeqRecord import SeqRecord
+    
+    valid_sequences = []
+    
+    for i, record in enumerate(sequences):
+        try:
+            # Check if sequence is defined by attempting to convert to string
+            seq_str = str(record.seq)
+            valid_sequences.append(record)
+        except UndefinedSequenceError:
+            # Extract accession and try to fetch directly
+            accession = record.id.split('.')[0]
+            try:
+                # Only try to fetch it if it looks like a sequence accession (and not a genome assembly)
+                if not accession.endswith("000000000"):
+                    logger.info(f"Trying to fetch sequence {accession} directly")
+                    direct_record = fetch_sequence_by_accession(accession, email)
+                    valid_sequences.append(direct_record)
+                else:
+                    logger.warning(f"Skipping genome assembly ID {accession}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch direct sequence for {accession}: {e}")
+            
+    return valid_sequences
+    
+def load_local_fasta(fasta_path: str) -> List[SeqRecord]:
+    """
+    Load sequences from a local FASTA file using Biopython.
+    
+    Args:
+        fasta_path (str): Path to the local FASTA file.
+        
+    Returns:
+        List[SeqRecord]: A list of sequences parsed from the FASTA file.
+    """
+    logger.info(f"Loading local FASTA file from {fasta_path}")
+    try:
+        seq_records = list(SeqIO.parse(fasta_path, "fasta"))
+        logger.info(f"Loaded {len(seq_records)} sequences from {fasta_path}")
+        return seq_records
+    except Exception as e:
+        logger.error(f"Error loading local FASTA file {fasta_path}: {str(e)}")
+        raise

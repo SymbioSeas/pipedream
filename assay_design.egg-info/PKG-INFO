@@ -1,0 +1,143 @@
+Metadata-Version: 2.4
+Name: assay_design
+Version: 0.1.0
+Summary: A package for designing specific molecular assays
+Home-page: https://github.com/yourusername/assay_design
+Author: Your Name
+Author-email: your.email@example.com
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Topic :: Scientific/Engineering :: Bio-Informatics
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: biopython>=1.79
+Requires-Dist: click>=8.0
+Requires-Dist: numpy>=1.20.0
+Dynamic: license-file
+
+# Assay Design Package
+
+A Python package for designing specific molecular assays targeting particular taxa while excluding others.
+
+## Features
+
+- Fetch sequence data from NCBI
+- Automatically identify related taxa for exclusion criteria
+- Find conserved marker regions specific to target taxa
+- Design and validate primers for marker regions
+- Command-line interface for easy use
+
+## Installation
+
+### From PyPI
+
+```bash
+pip install assay_design
+```
+
+### From source
+
+```bash
+git clone https://github.com/yourusername/assay_design.git
+cd assay_design
+pip install -e .
+```
+
+## Usage
+
+### Command Line Interface
+
+Design an assay for a specific organism (using taxid 689 for Vibrio mediterranei as an example):
+
+```bash
+# Basic usage with automatic exclusion taxa selection
+assay-design --inclusion 689 --email your.email@example.com --auto-exclusion
+
+# Design for a specific gene
+assay-design --inclusion 689 --gene "16S ribosomal RNA" --email your.email@example.com
+
+# Get gene suggestions
+assay-design --inclusion 689 --email your.email@example.com --suggest-genes
+
+# Manual exclusion taxa
+assay-design --inclusion 689 --exclusion 717,670,672 --email your.email@example.com
+```
+
+### Python API
+
+```python
+from assay_design.data_retrieval import fetch_sequences_for_taxid, get_related_taxa
+from assay_design.target_identification import find_conserved_marker
+from assay_design.primer_design import design_primers
+from assay_design.specificity_validation import validate_primer_specificity
+
+# Fetch sequences for inclusion taxid
+inclusion_sequences = fetch_sequences_for_taxid(
+    taxid="689",  # Vibrio mediterranei
+    email="your.email@example.com",
+    max_records=10
+)
+
+# Get related taxa for exclusion
+related_taxa = get_related_taxa(
+    taxid="689",
+    email="your.email@example.com",
+    relationship="sibling",
+    max_results=3
+)
+exclusion_taxids = [taxon["taxid"] for taxon in related_taxa]
+
+# Fetch sequences for exclusion taxids
+exclusion_sequences = []
+for taxid in exclusion_taxids:
+    sequences = fetch_sequences_for_taxid(
+        taxid=taxid,
+        email="your.email@example.com",
+        max_records=5
+    )
+    exclusion_sequences.extend(sequences)
+
+# Find conserved markers
+marker_info = find_conserved_marker(
+    inclusion_sequences=inclusion_sequences,
+    exclusion_sequences=exclusion_sequences
+)
+
+# Design primers
+primers = design_primers(marker_info)
+
+# Validate specificity
+validation = validate_primer_specificity(
+    primers=primers,
+    inclusion_taxid="689",
+    exclusion_taxids=exclusion_taxids,
+    email="your.email@example.com"
+)
+
+print(f"Designed primers: {primers}")
+print(f"Validation results: {validation}")
+```
+
+## Performance Optimization
+
+By default, the package uses Locality-Sensitive Hashing (LSH) for efficient sequence comparison when identifying specific marker regions. This significantly improves performance for large datasets.
+
+If you need to use the traditional k-mer comparison method (e.g., for debugging or validation), you can disable LSH with the '--no-lsh' flag:
+
+```bash
+assay-design --inclusion 689 --email your.email@example.com --no-lsh
+```
+
+## Requirements
+
+- Python 3.7+
+- Biopython
+- External tools (optional but recommended):
+  - MAFFT, MUSCLE, or ClustalW for multiple sequence alignment
+  - Primer3 for advanced primer design (the package includes a basic implementation)
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
