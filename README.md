@@ -4,11 +4,15 @@ A Python package for designing specific molecular assays targeting particular ta
 
 ## Features
 
-- Fetch sequence data from NCBI
-- Automatically identify related taxa for exclusion criteria
-- Find conserved marker regions specific to target taxa
-- Design and validate primers for marker regions
-- Command-line interface for easy use
+- **Automated Gene Selection**: Intelligently selects the most suitable gene markers based on sequence availability, copy number, and evolutionary properties
+- **Phylogenetic-Aware Exclusion**: Automatically identify related taxa for exclusion using phylogenetic distance weighting
+- **Flexible Exclusion Strategies**: Choose from genus-level, family-level, order-level, or custom exclusion approaches
+- **Multi-Domain Support**: Automatic detection and handling of Bacteria, Archaea, Eukaryota, and Viruses
+- **Gene Suitability Scoring**: Evaluates candidate genes based on sequence availability, copy number stability, HGT resistance, and optimal length
+- **Fetch sequence data from NCBI**: Retrieve genomic and gene sequences for any taxonomic ID
+- **Find conserved marker regions**: Identify taxa-specific conserved regions
+- **Design and validate primers**: Automated primer design for marker regions
+- **Command-line interface**: Easy-to-use CLI with extensive customization options
 
 ## Installation
 
@@ -32,27 +36,190 @@ pip install -e .
 
 Design an assay for a specific organism (using taxid 689 for Vibrio mediterranei as an example):
 
+#### Fully Automated Workflow (Recommended)
+
 ```bash
-# Basic usage with automatic exclusion taxa selection
-assay-design --inclusion 689 --email your.email@example.com --auto-exclusion
+# Fully automated: auto-select gene AND exclusion taxa
+assay-design --inclusion 689 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --output-dir ./results
 
-# Design for a specific gene
-assay-design --inclusion 689 --gene "16S ribosomal RNA" --email your.email@example.com
+# Use family-level exclusion strategy (broader exclusion scope)
+assay-design --inclusion 689 --email your.email@example.com --auto-gene --exclusion-strategy family --output-dir ./results
 
-# Get gene suggestions
-assay-design --inclusion 689 --email your.email@example.com --suggest-genes
+# Genus-level (sibling species) exclusion
+assay-design --inclusion 689 --email your.email@example.com --auto-gene --exclusion-strategy siblings --output-dir ./results
+```
 
-# Manual exclusion taxa
-assay-design --inclusion 689 --exclusion 717,670,672 --email your.email@example.com
+#### Automated Gene Selection
+
+```bash
+# Let the system choose the best gene automatically
+assay-design --inclusion 689 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --output-dir ./results
+
+# Customize gene selection for specific use cases
+assay-design --inclusion 689 --email your.email@example.com --auto-gene --gene-use-case quantification --output-dir ./results
+
+# View available genes and their suitability scores
+assay-design --inclusion 689 --email your.email@example.com --suggest-genes --output-dir ./results
+```
+
+#### Exclusion Strategy Options
+
+```bash
+# Intelligent multi-level exclusion (recommended) - phylogenetic-aware selection
+assay-design --inclusion 689 --email your.email@example.com --exclusion-strategy intelligent --max-exclusion-taxa 10 --output-dir ./results
+
+# Genus-level exclusion (siblings) - excludes sibling species in the same genus
+assay-design --inclusion 689 --email your.email@example.com --exclusion-strategy siblings --output-dir ./results
+
+# Family-level exclusion - excludes related genera in the same family
+assay-design --inclusion 689 --email your.email@example.com --exclusion-strategy family --output-dir ./results
+
+# Order-level exclusion - excludes related families in the same order
+assay-design --inclusion 689 --email your.email@example.com --exclusion-strategy order --output-dir ./results
+
+# Manual exclusion - manually specify taxa to exclude
+assay-design --inclusion 689 --exclusion 717,670,672 --email your.email@example.com --output-dir ./results
+```
+
+#### Manual Gene Selection
+
+```bash
+# Specify a particular gene
+assay-design --inclusion 689 --gene "rpoB" --email your.email@example.com --exclusion-strategy intelligent --output-dir ./results
+
+# Specify gene with custom exclusion
+assay-design --inclusion 689 --gene "16S ribosomal RNA" --exclusion 717,670,672 --email your.email@example.com --output-dir ./results
+```
+
+#### Advanced Options
+
+```bash
+# Disable LSH optimization for traditional k-mer comparison
+assay-design --inclusion 689 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --no-lsh --output-dir ./results
+
+# Combine multiple options for fine-tuned control
+assay-design --inclusion 689 --email your.email@example.com \
+  --auto-gene \
+  --gene-use-case phylogeny \
+  --exclusion-strategy family \
+  --max-exclusion-taxa 15 \
+  --output-dir ./results
+
+# Control gene selection fallback behavior
+assay-design --inclusion 689 --email your.email@example.com \
+  --auto-gene \
+  --max-genes-to-try 5 \
+  --min-gene-score 0.6 \
+  --output-dir ./results
 ```
 
 ### Python API
+
+#### Fully Automated Workflow (Recommended)
+
+```python
+from assay_design.gene_selection import (
+    auto_select_gene_for_taxon,
+    GeneSelectionCriteria
+)
+from assay_design.hierarchical_search import intelligent_exclusion_selection
+from assay_design.data_retrieval import fetch_gene_sequences
+from assay_design.target_identification import find_conserved_marker
+from assay_design.primer_design import design_primers
+
+# Step 1: Automatically select the best gene
+gene_result = auto_select_gene_for_taxon(
+    taxid="689",  # Vibrio mediterranei
+    email="your.email@example.com"
+)
+selected_gene = gene_result['gene']
+print(f"Selected gene: {selected_gene} (score: {gene_result['total_score']:.2f})")
+
+# Step 2: Intelligently select exclusion taxa using phylogenetic distance weighting
+exclusion_taxa = intelligent_exclusion_selection(
+    taxid="689",
+    email="your.email@example.com",
+    strategy="genus",  # or "family", "order"
+    phylo_distance_weight=0.8,
+    max_exclusion_taxa=5
+)
+exclusion_taxids = [t['taxid'] for t in exclusion_taxa]
+
+# Step 3: Fetch sequences for inclusion and exclusion
+inclusion_sequences = fetch_gene_sequences(
+    taxid="689",
+    gene_name=selected_gene,
+    email="your.email@example.com",
+    max_records=10
+)
+
+exclusion_sequences = []
+for taxid in exclusion_taxids:
+    sequences = fetch_gene_sequences(
+        taxid=taxid,
+        gene_name=selected_gene,
+        email="your.email@example.com",
+        max_records=5
+    )
+    exclusion_sequences.extend(sequences)
+
+# Step 4: Find conserved markers
+marker_info = find_conserved_marker(
+    inclusion_sequences=inclusion_sequences,
+    exclusion_sequences=exclusion_sequences
+)
+
+# Step 5: Design primers
+primers = design_primers(marker_info)
+
+print(f"Designed primers: {primers}")
+```
+
+#### Manual Gene Selection with Custom Criteria
+
+```python
+from assay_design.gene_selection import (
+    rank_candidate_genes,
+    evaluate_gene_suitability,
+    GeneSelectionCriteria,
+    BACTERIA_GENES
+)
+
+# Define custom gene selection criteria
+custom_criteria = GeneSelectionCriteria(
+    min_sequence_count=20,
+    ideal_length_range=(1000, 1800),
+    single_copy_preferred=True,
+    hgt_resistant_preferred=True
+)
+
+# Evaluate all candidate genes
+gene_scores = []
+for gene_name, gene_info in BACTERIA_GENES.items():
+    result = evaluate_gene_suitability(
+        taxid="689",
+        gene_name=gene_name,
+        email="your.email@example.com",
+        criteria=custom_criteria
+    )
+    gene_scores.append(result)
+
+# Rank genes by suitability
+ranked_genes = rank_candidate_genes(gene_scores)
+
+# Use the top-ranked gene
+best_gene = ranked_genes[0]
+print(f"Best gene: {best_gene['gene']}")
+print(f"Score: {best_gene['total_score']:.2f}")
+print(f"Sequences available: {best_gene['sequence_count']}")
+```
+
+#### Traditional Workflow with get_related_taxa
 
 ```python
 from assay_design.data_retrieval import fetch_sequences_for_taxid, get_related_taxa
 from assay_design.target_identification import find_conserved_marker
 from assay_design.primer_design import design_primers
-from assay_design.specificity_validation import validate_primer_specificity
 
 # Fetch sequences for inclusion taxid
 inclusion_sequences = fetch_sequences_for_taxid(
@@ -61,12 +228,13 @@ inclusion_sequences = fetch_sequences_for_taxid(
     max_records=10
 )
 
-# Get related taxa for exclusion
+# Get related taxa for exclusion with phylogenetic distance weighting
 related_taxa = get_related_taxa(
     taxid="689",
     email="your.email@example.com",
     relationship="sibling",
-    max_results=3
+    max_results=5,
+    phylo_distance_weight=0.8  # Prioritize phylogenetically closer taxa
 )
 exclusion_taxids = [taxon["taxid"] for taxon in related_taxa]
 
@@ -89,17 +257,93 @@ marker_info = find_conserved_marker(
 # Design primers
 primers = design_primers(marker_info)
 
-# Validate specificity
-validation = validate_primer_specificity(
-    primers=primers,
-    inclusion_taxid="689",
-    exclusion_taxids=exclusion_taxids,
-    email="your.email@example.com"
-)
-
 print(f"Designed primers: {primers}")
-print(f"Validation results: {validation}")
 ```
+
+## Gene Selection Algorithm
+
+### How Automated Gene Selection Works
+
+The automated gene selection feature evaluates candidate genes based on multiple criteria to identify the most suitable marker for your target taxon:
+
+1. **Sequence Availability**: Evaluates how many sequences are available in NCBI databases
+   - Optimal: 20+ sequences available
+   - Score decreases for sparse sequence data
+
+2. **Copy Number Stability**: Prefers single-copy genes to avoid PCR bias
+   - Single-copy genes: Full score
+   - Multi-copy genes (e.g., rRNA): Partial score
+
+3. **HGT (Horizontal Gene Transfer) Resistance**: Prioritizes genes with low HGT rates
+   - Core housekeeping genes: Higher score
+   - Mobile or frequently transferred genes: Lower score
+
+4. **Sequence Length**: Targets optimal length range for primer design
+   - Ideal: 800-1500 bp
+   - Penalties for sequences too short (<500 bp) or too long (>3000 bp)
+
+### Available Gene Databases
+
+The package includes curated gene databases for different taxonomic domains:
+
+**Bacteria** (30 genes):
+- rpoB, rpoD, gyrB, recA, dnaK, groEL, atpD, fusA
+- 16S rRNA, 23S rRNA, infB, tuf, rplB, rpsB
+- And 16 additional housekeeping genes
+
+**Archaea** (20 genes):
+- rpoB, rpoA1, rpoA2, EF-2, SecY, RecA
+- 16S rRNA, 23S rRNA, and 12 additional marker genes
+
+**Eukaryota** (20 genes):
+- 18S rRNA, 28S rRNA, ITS, COI, CytB
+- actin, tubulin, EF-1α, and 12 additional markers
+
+**Viruses** (15 genes):
+- RdRp, capsid, polymerase, and 12 viral-specific markers
+
+### Customizing Gene Selection Criteria
+
+You can customize the gene selection criteria using the `GeneSelectionCriteria` class:
+
+```python
+from assay_design.gene_selection import GeneSelectionCriteria
+
+custom_criteria = GeneSelectionCriteria(
+    min_sequence_count=15,           # Minimum sequences required
+    ideal_length_range=(1000, 1800), # Optimal length range (bp)
+    single_copy_preferred=True,      # Prefer single-copy genes
+    hgt_resistant_preferred=True     # Prefer HGT-resistant genes
+)
+```
+
+## Intelligent Exclusion Selection
+
+### Exclusion Strategies
+
+The package provides multiple exclusion strategies to match your assay design goals:
+
+1. **Intelligent** (recommended): Multi-level phylogenetic-aware selection
+   - Automatically selects exclusion taxa across multiple taxonomic levels
+   - Balances close and distant relatives for robust specificity
+   - Uses `intelligent_exclusion_selection()` with phylogenetic distance weighting
+   - Control the number with `--max-exclusion-taxa` (default: 10)
+
+2. **Siblings** (genus-level): Excludes sibling species within the same genus
+   - Best for species-specific assays
+   - Example: Targeting *Vibrio mediterranei*, excludes other *Vibrio* species
+
+3. **Family-level**: Excludes related genera within the same family
+   - Best for genus-specific assays
+   - Example: Targeting *Vibrio* genus, excludes other Vibrionaceae genera
+
+4. **Order-level**: Excludes related families within the same order
+   - Best for family-specific assays
+   - Example: Targeting Vibrionaceae, excludes other Vibrionales families
+
+5. **Manual**: Use only user-specified exclusion taxa
+   - Full control over which taxa to exclude
+   - Specify with `--exclusion taxid1,taxid2,taxid3`
 
 ## Performance Optimization
 

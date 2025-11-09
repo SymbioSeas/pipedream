@@ -16,7 +16,8 @@ from .data_retrieval import (
     suggest_marker_genes,
     get_taxon_info,
     fetch_cds_sequences,
-    load_local_fasta
+    load_local_fasta,
+    intelligent_exclusion_selection
 )
 #Import hierarchical search function
 from .hierarchical_search import hierarchical_marker_search
@@ -51,21 +52,30 @@ def create_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Design an assay with automatic gene and exclusion selection (recommended)
+  assay-design --inclusion 689 --email user@example.com --auto-gene --exclusion-strategy intelligent --output-dir ./vibrio_auto
+
+  # Design a quantification assay (single-copy gene, multi-level exclusion)
+  assay-design --inclusion 689 --email user@example.com --auto-gene --gene-use-case quantification --exclusion-strategy intelligent --max-exclusion-taxa 15 --output-dir ./vibrio_quant
+
   # Design an assay for Vibrio mediterranei using automatic exclusion taxa
   assay-design --inclusion 689 --email user@example.com --output-dir ./vibrio_assay
-  
+
   # Design an assay for a specific gene in Vibrio mediterranei
   assay-design --inclusion 689 --email user@example.com --gene "16S ribosomal RNA" --output-dir ./vibrio_16S_assay
-  
+
   # Get suggestions for marker genes for a taxon
   assay-design --inclusion 689 --email user@example.com --suggest-genes --output-dir ./vibrio_marker_assay
-  
+
   # Design with manual exclusion taxa
   assay-design --inclusion 689 --exclusion 717,670,672 --email user@example.com --output-dir ./vibrio_specific_assay
-  
+
+  # Design with intelligent multi-level exclusion
+  assay-design --inclusion 689 --email user@example.com --exclusion-strategy intelligent --max-exclusion-taxa 10 --output-dir ./vibrio_intelligent
+
   # Design an assay using local FASTA files
   assay-design --inclusion-fasta nifH_refseq_100.fna --email user@example.com --output-dir ./nifH_assay
-  
+
   # Design an assay using local FASTA files for both inclusion and exclusion
   assay-design --inclusion-fasta nifH_refseq_100.fna --exclusion-fasta non_target_sequences.fasta --email user@example.com --output-dir ./custom_assay
 """
@@ -74,8 +84,8 @@ Examples:
     # Required arguments
     required = parser.add_argument_group('required arguments')
     required.add_argument(
-        '--email', 
-        type=str, 
+        '--email',
+        type=str,
         required=True,
         help='Your email for NCBI queries (required by NCBI)'
     )
@@ -84,6 +94,13 @@ Examples:
         type=str,
         required=True,
         help='Output directory for assay design results'
+    )
+
+    # Optional API key for improved NCBI rate limits
+    parser.add_argument(
+        '--api-key',
+        type=str,
+        help='NCBI API key for higher rate limits (get one at https://www.ncbi.nlm.nih.gov/account/)'
     )
     
     # Make inclusion group conditionally required (required if --cds isn't specified)
@@ -117,14 +134,51 @@ Examples:
         help='NCBI taxids for non-target organisms (comma-separated)'
     )
     parser.add_argument(
-        '--gene', 
+        '--gene',
         type=str,
         help='Specific gene target (e.g., "16S ribosomal RNA")'
     )
     parser.add_argument(
-        '--auto-exclusion', 
+        '--auto-gene',
+        action='store_true',
+        help='Automatically select optimal gene for assay design (overrides --gene)'
+    )
+    parser.add_argument(
+        '--gene-use-case',
+        type=str,
+        choices=['quantification', 'phylogeny', 'detection'],
+        default='quantification',
+        help='Use case for gene selection: quantification (single-copy, HGT-resistant), phylogeny (conserved, informative), or detection (highly specific) (default: quantification)'
+    )
+    parser.add_argument(
+        '--max-genes-to-try',
+        type=int,
+        default=3,
+        help='Maximum number of genes to try in fallback strategy (default: 3)'
+    )
+    parser.add_argument(
+        '--min-gene-score',
+        type=float,
+        default=0.4,
+        help='Minimum acceptable gene suitability score 0-1 (default: 0.4)'
+    )
+    parser.add_argument(
+        '--auto-exclusion',
         action='store_true',
         help='Automatically select related taxa for exclusion'
+    )
+    parser.add_argument(
+        '--exclusion-strategy',
+        type=str,
+        choices=['intelligent', 'manual', 'siblings', 'family', 'order'],
+        default='siblings',
+        help='Strategy for exclusion taxa selection: intelligent (multi-level phylogenetic), manual (user-specified only), siblings (genus-level), family, or order (default: siblings)'
+    )
+    parser.add_argument(
+        '--max-exclusion-taxa',
+        type=int,
+        default=10,
+        help='Maximum number of exclusion taxa to select (default: 10, only used with intelligent strategy)'
     )
     parser.add_argument(
         '--auto-exclusion-rank', 
@@ -556,7 +610,8 @@ def main():
                     cds_name=args.cds,
                     email=args.email,
                     max_seqs=getattr(args, 'max_seqs', 100),
-                    output_file=output_file
+                    output_file=output_file,
+                    api_key=getattr(args, 'api_key', None)
                 )
             except Exception as e:
                 logger.error(f"Error fetching CDS sequences: {e}")
@@ -622,7 +677,7 @@ def main():
         
         # Get taxonomy information for the target
         try:
-            target_info = get_taxon_info(inclusion_taxid, args.email)
+            target_info = get_taxon_info(inclusion_taxid, args.email, api_key=getattr(args, 'api_key', None))
             target_name = target_info.get("scientific_name", f"Taxid:{inclusion_taxid}")
             logger.info(f"Target organism {target_name} ({inclusion_taxid})")
         except Exception as e:
@@ -635,64 +690,121 @@ def main():
             if args.exclusion:
                 exclusion_taxids = args.exclusion.split(',')
                 logger.info(f"Manually specified exclusion taxa: {exclusion_taxids}")
-                
-            # Auto-generate exclusion taxa if requested
-            if args.auto_exclusion:
-                logger.info(f"Automatically selecting related taxa at rank '{args.auto_exclusion_rank}'")
+
+            # Handle intelligent exclusion strategy
+            if args.exclusion_strategy == 'intelligent':
+                logger.info(f"Using intelligent multi-level exclusion strategy (max: {args.max_exclusion_taxa} taxa)")
+                try:
+                    exclusion_result = intelligent_exclusion_selection(
+                        inclusion_taxid=inclusion_taxid,
+                        email=args.email,
+                        max_exclusion_taxa=args.max_exclusion_taxa,
+                        require_sequences=True,
+                        min_sequence_count=5,
+                        api_key=getattr(args, 'api_key', None)
+                    )
+
+                    if 'error' not in exclusion_result:
+                        new_taxids = exclusion_result.get('exclusion_taxids', [])
+                        taxa_info_dict = exclusion_result.get('taxa_info', {})
+
+                        for taxid in new_taxids:
+                            if taxid not in exclusion_taxids:
+                                exclusion_taxids.append(taxid)
+                                taxon_info = taxa_info_dict.get(taxid, {'taxid': taxid})
+                                exclusion_info.append(taxon_info)
+                                logger.info(f"Intelligent exclusion selected: {taxon_info.get('scientific_name', 'Unknown')} "
+                                          f"(taxid: {taxid}, level: {taxon_info.get('diversity_level', 'unknown')})")
+
+                        coverage_score = exclusion_result.get('coverage_score', 0)
+                        logger.info(f"Phylogenetic coverage score: {coverage_score:.2f}")
+                        logger.info(f"Tier summary: {exclusion_result.get('tier_summary', {})}")
+                    else:
+                        logger.warning(f"Intelligent exclusion failed: {exclusion_result.get('error')}")
+                        logger.info("Falling back to default exclusion strategy")
+
+                except Exception as e:
+                    logger.error(f"Error in intelligent exclusion selection: {e}")
+                    logger.info("Falling back to default exclusion strategy")
+
+            # Auto-generate exclusion taxa with specific rank if requested
+            elif args.auto_exclusion or args.exclusion_strategy in ['siblings', 'family', 'order']:
+                # Determine rank from strategy
+                if args.exclusion_strategy in ['siblings', 'family', 'order']:
+                    rank = 'genus' if args.exclusion_strategy == 'siblings' else args.exclusion_strategy
+                else:
+                    rank = args.auto_exclusion_rank
+
+                logger.info(f"Automatically selecting related taxa at rank '{rank}'")
                 related_taxa = get_related_taxa(
                     taxid=inclusion_taxid,
                     email=args.email,
                     relationship="sibling",
-                    rank=args.auto_exclusion_rank,
-                    max_results=args.auto_exclusion_count
+                    rank=rank,
+                    max_results=args.auto_exclusion_count,
+                    api_key=getattr(args, 'api_key', None)
                 )
-                
+
                 for taxon in related_taxa:
                     taxid = taxon.get("taxid")
                     if taxid and taxid not in exclusion_taxids:
                         exclusion_taxids.append(taxid)
                         exclusion_info.append(taxon)
                         logger.info(f"Auto-selected exclusion taxon: {taxon.get('scientific_name')} (taxid: {taxid})")
-            
+
             # Get exclusion taxa info if not already obtained
-            if not exclusion_info:
+            if not exclusion_info and exclusion_taxids:
                 for taxid in exclusion_taxids:
                     try:
-                        taxon_info = get_taxon_info(taxid, args.email)
+                        taxon_info = get_taxon_info(taxid, args.email, api_key=getattr(args, 'api_key', None))
                         exclusion_info.append(taxon_info)
                         logger.info(f"Exclusion taxon: {taxon_info.get('scientific_name')} ({taxid})")
                     except Exception as e:
                         logger.error(f"Error fetching exclusion taxon info: {e}")
                         exclusion_info.append({"taxid": taxid})
                 
-        # Fetch sequences for inclusion taxid
-        logger.info(f"Fetching sequences for inclusion taxid {inclusion_taxid}")
-        try:
-            if args.gene:
-                inclusion_sequences = fetch_gene_sequences(
-                    taxid=inclusion_taxid,
-                    gene_name=args.gene,
-                    email=args.email,
-                    max_records=args.max_seq_count * 2
-                )
-                selected_gene = args.gene  # Track selected gene
-            else:
-                inclusion_sequences = fetch_sequences_for_taxid(
-                    taxid=inclusion_taxid,
-                    email=args.email,
-                    max_records=args.max_seq_count * 2
-                )
-                
-            logger.info(f"Retrieved {len(inclusion_sequences)} sequences for inclusion taxid")
-            
-            if not inclusion_sequences:
-                logger.error(f"No sequences found for taxid {inclusion_taxid}" + 
-                            (f" with gene {args.gene}" if args.gene else ""))
+        # Determine gene selection approach
+        if args.auto_gene and not args.gene:
+            logger.info(f"Auto-gene selection enabled (use case: {args.gene_use_case})")
+            # Gene will be selected by hierarchical_marker_search
+            selected_gene = None
+        elif args.gene:
+            selected_gene = args.gene
+            logger.info(f"Using manually specified gene: {selected_gene}")
+        else:
+            selected_gene = None
+
+        # Fetch sequences for inclusion taxid only if not using auto-gene
+        # (auto-gene will fetch sequences internally)
+        if not args.auto_gene:
+            logger.info(f"Fetching sequences for inclusion taxid {inclusion_taxid}")
+            try:
+                if selected_gene:
+                    inclusion_sequences = fetch_gene_sequences(
+                        taxid=inclusion_taxid,
+                        gene_name=selected_gene,
+                        email=args.email,
+                        max_records=args.max_seq_count * 2,
+                        api_key=getattr(args, 'api_key', None)
+                    )
+                else:
+                    inclusion_sequences = fetch_sequences_for_taxid(
+                        taxid=inclusion_taxid,
+                        email=args.email,
+                        max_records=args.max_seq_count * 2,
+                        api_key=getattr(args, 'api_key', None)
+                    )
+
+                logger.info(f"Retrieved {len(inclusion_sequences)} sequences for inclusion taxid")
+
+                if not inclusion_sequences:
+                    logger.error(f"No sequences found for taxid {inclusion_taxid}" +
+                                (f" with gene {selected_gene}" if selected_gene else ""))
+                    sys.exit(1)
+
+            except Exception as e:
+                logger.error(f"Error fetching inclusion sequences: {e}")
                 sys.exit(1)
-                
-        except Exception as e:
-            logger.error(f"Error fetching inclusion sequences: {e}")
-            sys.exit(1)
 
     # Save sequences to files
     save_sequences(output_dir, inclusion_sequences, exclusion_sequences)
@@ -709,13 +821,15 @@ def main():
                         taxid=taxid,
                         gene_name=args.gene,
                         email=args.email,
-                        max_records=args.max_seq_count
+                        max_records=args.max_seq_count,
+                        api_key=getattr(args, 'api_key', None)
                     )
                 else:
                     sequences = fetch_sequences_for_taxid(
                         taxid=taxid,
                         email=args.email,
-                        max_records=args.max_seq_count
+                        max_records=args.max_seq_count,
+                        api_key=getattr(args, 'api_key', None)
                     )
                     
                 exclusion_sequences.extend(sequences)
@@ -764,9 +878,22 @@ def main():
                 timeout_seconds=args.max_runtime,
                 use_lsh=not args.no_lsh,
                 binding_sites_only=not args.whole_amplicon_specificity,
-                inclusion_sequences=inclusion_sequences if args.inclusion_fasta else None,
-                exclusion_sequences=exclusion_sequences if args.exclusion_fasta else None
+                inclusion_sequences=inclusion_sequences if (args.inclusion_fasta or not args.auto_gene) else None,
+                exclusion_sequences=exclusion_sequences if args.exclusion_fasta else None,
+                auto_gene_selection=args.auto_gene,
+                gene_use_case=args.gene_use_case,
+                max_genes_to_try=args.max_genes_to_try,
+                min_gene_score=args.min_gene_score
             )
+
+            # Extract gene selection info if auto-gene was used
+            if args.auto_gene and 'gene_selection_info' in marker_info:
+                gene_info = marker_info['gene_selection_info']
+                if 'selected_gene' in gene_info:
+                    selected_gene = gene_info['selected_gene']
+                    logger.info(f"Auto-selected gene: {selected_gene} (score: {gene_info.get('gene_score', 0):.2f})")
+                elif 'error' in gene_info:
+                    logger.warning(f"Auto-gene selection encountered error: {gene_info['error']}")
     except Exception as e:
         logger.error(f"Error in marker identification: {e}")
         marker_info = {

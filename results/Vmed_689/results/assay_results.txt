@@ -1,0 +1,13 @@
+=== Assay Design Results ===
+        
+Target: Vibrio mediterranei (taxid: 689)
+Target gene: recA
+
+ERROR: Could not design suitable assay
+
+Reason: Could not find specific regions suitable for assay design
+
+Please consider the following options:
+1. Try a different target gene
+2. Adjust parameters (e.g., increase maximum amplicon length)
+3. Use manual exclusion instead of auto-exclusion

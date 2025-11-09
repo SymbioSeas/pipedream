@@ -15,28 +15,34 @@ cache_manager = SequenceCacheManager()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def fetch_sequence_by_accession(accession_id: str, email: str, db: str = "nucleotide") -> SeqIO.SeqRecord:
+def fetch_sequence_by_accession(accession_id: str, email: str, db: str = "nucleotide", api_key: Optional[str] = None) -> SeqIO.SeqRecord:
     """
     Fetch a single sequence by accession from NCBI.
-    
+
     Args:
         accession_id (str): NCBI accession ID (e.g., 'NC_000913.3').
         email (str): User's email address (required by NCBI to track usage).
         db (str): NCBI database from which to fetch (default 'nucleotide').
-        
+        api_key (Optional[str]): NCBI API key for higher rate limits
+
     Returns:
         SeqIO.SeqRecord: A Biopython SeqRecord containing the requested sequence.
-        
+
     Raises:
         ValueError: If no email is provided.
         RuntimeError: If retrieval fails or sequence is empty.
     """
     if not email:
         raise ValueError("You must provide a valid email address to comply with NCBI's usage policies.")
-        
+
     # Set NCBI Entrez parameters
     Entrez.email = email
-    
+    if api_key:
+        Entrez.api_key = api_key
+
+    # Rate limiting
+    time.sleep(0.11 if api_key else 0.34)
+
     try:
         logger.info(f"Fetching sequence for accession {accession_id} from NCBI {db} database.")
         handle = Entrez.efetch(db=db, id=accession_id, rettype="fasta", retmode="text")
@@ -54,15 +60,16 @@ def fetch_sequence_by_accession(accession_id: str, email: str, db: str = "nucleo
         raise
 
 def fetch_sequences_for_taxid(
-    taxid: str, 
-    email: str, 
-    query_term: Optional[str] = None, 
+    taxid: str,
+    email: str,
+    query_term: Optional[str] = None,
     max_records: int = 50,
-    db: str = "nucleotide"
-) -> List[SeqRecord]:        
+    db: str = "nucleotide",
+    api_key: Optional[str] = None
+) -> List[SeqRecord]:
     """
     Fetch sequences by NCBI TaxID with optional additional query terms.
-    
+
     Args:
         taxid (str): NCBI TaxID, e.g., '562' for E. coli.
         email (str): User's email address (required by NCBI).
@@ -70,32 +77,41 @@ def fetch_sequences_for_taxid(
         max_records (int): Maximum number of sequences to fetch.
         query_term (Optional[str]): Optional specific NCBI query term.
             If None, will use "txid{taxid}[Organism]"
-        
+        api_key (Optional[str]): NCBI API key for higher rate limits
+
     Returns:
         List[SeqIO.SeqRecord]: A list of retrieved SeqRecords.
     """
     if not email:
         raise ValueError("Email address is required.")
-        
+
     Entrez.email = email
+    if api_key:
+        Entrez.api_key = api_key
     
     try:
         # Build the search query
         if query_term is None:
             query_term = f"txid{taxid}[Organism] AND biomol_genomic[PROP]"
-            
-        query_term += "NOT wgs[Filter]"
+
+        query_term += " NOT wgs[Filter]"
         
         logger.info(f"Searching for up to {max_records} sequences with query: {query_term}")
+        # Rate limiting before search
+        time.sleep(0.11 if api_key else 0.34)
+
         search_handle = Entrez.esearch(db=db, term=query_term, retmax=max_records)
         search_results = Entrez.read(search_handle)
         search_handle.close()
-        
+
         ids = search_results.get("IdList", [])
         logger.info(f"Found {len(ids)} records. Fetching details...")
-        
+
         records = []
         if ids:
+            # Rate limiting before fetch
+            time.sleep(0.11 if api_key else 0.34)
+
             try:
                 fetch_handle = Entrez.efetch(db=db, id=",".join(ids), rettype="gb", retmode="text")
                 records = list(SeqIO.parse(fetch_handle, "genbank"))
@@ -103,13 +119,15 @@ def fetch_sequences_for_taxid(
                 
                 # If we got no genbank records, try FASTA format as a fallback
                 if not records:
+                    time.sleep(0.11 if api_key else 0.34)
                     fetch_handle = Entrez.efetch(db=db, id=",".join(ids), rettype="fasta", retmode="text")
                     records = list(SeqIO.parse(fetch_handle, "fasta"))
                     fetch_handle.close()
-                    
+
             except Exception as inner_e:
                 logger.warning(f"Error in first fetch attempt: {str(inner_e)}. Trying alternative format...")
                 try:
+                    time.sleep(0.11 if api_key else 0.34)
                     fetch_handle = Entrez.efetch(db=db, id=",".join(ids), rettype="fasta", retmode="text")
                     records = list(SeqIO.parse(fetch_handle, "fasta"))
                     fetch_handle.close()
@@ -117,9 +135,9 @@ def fetch_sequences_for_taxid(
                     logger.error(f"Both fetch attempts failed: {str(fallback_e)}")
                     
             logger.info(f"Fetched {len(records)} sequences.")
-            
+
             # Validate sequences before returning
-            records = ensure_sequences_are_defined(records, email)
+            records = ensure_sequences_are_defined(records, email, api_key)
             logger.info(f"Validated {len(records)} sequences with defined content.")
             
         return records
@@ -133,36 +151,39 @@ def fetch_gene_sequences(
     gene_name: str,
     email: str,
     max_records: int = 50,
-    allow_wgs: bool = False
+    allow_wgs: bool = False,
+    api_key: Optional[str] = None
 ) -> List[SeqRecord]:
     """
     Fetch sequences for a specific gene from a specific taxon.
-    
+
     Args:
         taxid (str): NCBI TaxID
         gene_name (str): Gene name to search for
         email (str): User's email address
         max_records (int): Maximum number of sequences to fetch
-        
+        allow_wgs (bool): Allow WGS sequences
+        api_key (Optional[str]): NCBI API key for higher rate limits
+
     Returns:
         List[SeqRecord]: List of gene sequences
     """
     # Define primary and fallback queries
-    wgs_filter = "" if allow_wgs else "NOT wgs[Filter]"
+    wgs_filter = "" if allow_wgs else " NOT wgs[Filter]"
     queries = [
-        f"txid{taxid}[Organism] AND {gene_name}[Product] OR {gene_name}[Gene] OR {gene_name}[symbol] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
-        f"txid{taxid}[Organism] AND \"{gene_name}\"[Product] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
-        f"txid{taxid}[Organism] AND \"{gene_name}\" AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
-        f"txid{taxid}[Organism] AND {gene_name} AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}"
+        f"txid{taxid}[Organism] AND ({gene_name}[Product] OR {gene_name}[Gene] OR {gene_name}[symbol]) AND biomol_genomic[PROP] AND 200:20000[SLEN]{wgs_filter}",
+        f"txid{taxid}[Organism] AND \"{gene_name}\"[Product] AND biomol_genomic[PROP] AND 200:20000[SLEN]{wgs_filter}",
+        f"txid{taxid}[Organism] AND \"{gene_name}\" AND biomol_genomic[PROP] AND 200:20000[SLEN]{wgs_filter}",
+        f"txid{taxid}[Organism] AND {gene_name} AND biomol_genomic[PROP] AND 200:20000[SLEN]{wgs_filter}"
     ]
     
     # Add alternative queries for common marker genes
     if "16S" in gene_name:
         queries.extend([
-            f"txid{taxid}[Organism] AND 16S rRNA[Keyword] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
-            f"txid{taxid}[Organism] AND 16S ribosomal RNA[Keyword] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
-            f"txid{taxid}[Organism] AND 16S[Title] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
-            f"txid{taxid}[Organism] AND small subunit ribosomal RNA AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}"
+            f"txid{taxid}[Organism] AND 16S rRNA[Keyword] AND biomol_genomic[PROP] AND 200:20000[SLEN]{wgs_filter}",
+            f"txid{taxid}[Organism] AND 16S ribosomal RNA[Keyword] AND biomol_genomic[PROP] AND 200:20000[SLEN]{wgs_filter}",
+            f"txid{taxid}[Organism] AND 16S[Title] AND biomol_genomic[PROP] AND 200:20000[SLEN]{wgs_filter}",
+            f"txid{taxid}[Organism] AND small subunit ribosomal RNA AND biomol_genomic[PROP] AND 200:20000[SLEN]{wgs_filter}"
         ])
     
     all_sequences = []
@@ -174,9 +195,10 @@ def fetch_gene_sequences(
                 taxid=taxid,
                 email=email,
                 query_term=query,
-                max_records=max_records
+                max_records=max_records,
+                api_key=api_key
             )
-            
+
             if sequences:
                 logger.info(f"Found {len(sequences)} sequences with query: {query}")
                 all_sequences.extend(sequences)
@@ -188,10 +210,10 @@ def fetch_gene_sequences(
     # For 16S rRNA specifically, here are some alternative terms that might be used
     if not all_sequences and "16S" in gene_name:
         alternative_queries = [
-            f"txid{taxid}[Organism] AND 16S rRNA[Keyword] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
-            f"txid{taxid}[Organism] AND 16S ribosomal RNA[Keyword] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
-            f"txid{taxid}[Organism] AND 16S[Title] AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}",
-            f"txid{taxid}[Organism] AND small subunit ribosomal RNA AND biomol_genomic[PROP] AND 200:20000[SLEN] {wgs_filter}"
+            f"txid{taxid}[Organism] AND 16S rRNA[Keyword] AND biomol_genomic[PROP] AND 200:20000[SLEN]{wgs_filter}",
+            f"txid{taxid}[Organism] AND 16S ribosomal RNA[Keyword] AND biomol_genomic[PROP] AND 200:20000[SLEN]{wgs_filter}",
+            f"txid{taxid}[Organism] AND 16S[Title] AND biomol_genomic[PROP] AND 200:20000[SLEN]{wgs_filter}",
+            f"txid{taxid}[Organism] AND small subunit ribosomal RNA AND biomol_genomic[PROP] AND 200:20000[SLEN]{wgs_filter}"
         ]
         
         for query in alternative_queries:
@@ -201,13 +223,14 @@ def fetch_gene_sequences(
                     taxid=taxid,
                     email=email,
                     query_term=query,
-                    max_records=max_records
-                ) 
-                
+                    max_records=max_records,
+                    api_key=api_key
+                )
+
                 if sequences:
                     logger.info(f"Found {len(sequences)} sequences with alternative query: {query}")
                     all_sequences.extend(sequences)
-                    break # Stop if we found sequences
+                    break  # Stop if we found sequences
                     
             except Exception as e:
                 logger.warning(f"Alternative query failed: {str(e)}")
@@ -241,22 +264,28 @@ def fetch_marker_genes(
         max_records=max_records
     )
 
-def get_taxon_info(taxid: str, email: str) -> Dict[str, Any]:
+def get_taxon_info(taxid: str, email: str, api_key: Optional[str] = None) -> Dict[str, Any]:
     """
     Get information about a specific taxon.
-    
+
     Args:
         taxid (str): NCBI TaxID
         email (str): User's email address
-        
+        api_key (Optional[str]): NCBI API key for higher rate limits
+
     Returns:
         Dict[str, Any]: Taxonomy information
     """
     if not email:
         raise ValueError("Email address is required.")
-        
+
     Entrez.email = email
-    
+    if api_key:
+        Entrez.api_key = api_key
+
+    # Rate limiting: 3 requests/second without API key, 10/second with API key
+    time.sleep(0.11 if api_key else 0.34)
+
     try:
         logger.info(f"Fetching taxonomy information for taxid {taxid}")
         handle = Entrez.efetch(db="taxonomy", id=taxid, retmode="xml")
@@ -297,33 +326,37 @@ def get_taxon_info(taxid: str, email: str) -> Dict[str, Any]:
         raise
 
 def get_related_taxa(
-    taxid: str, 
-    email: str, 
+    taxid: str,
+    email: str,
     relationship: str = "sibling",
     rank: Optional[str] = None,
-    max_results: int = 50
+    max_results: int = 50,
+    api_key: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
     Find related taxa for a given taxid.
-    
+
     Args:
         taxid (str): NCBI TaxID
         email (str): User's email address
         relationship (str): Type of relationship ("sibling", "child", "parent")
         rank (Optional[str]): Taxonomic rank to consider
         max_results (int): Maximum number of results to return
-        
+        api_key (Optional[str]): NCBI API key for higher rate limits
+
     Returns:
         List[Dict[str, Any]]: List of related taxa info
     """
     if not email:
         raise ValueError("Email address is required.")
-        
+
     Entrez.email = email
-    
+    if api_key:
+        Entrez.api_key = api_key
+
     try:
         # First get the taxonomy information for our target
-        tax_info = get_taxon_info(taxid, email)
+        tax_info = get_taxon_info(taxid, email, api_key)
         if not tax_info:
             return []
         
@@ -349,25 +382,28 @@ def get_related_taxa(
             # If we found a parent, get its children
             if parent_taxid:
                 # Build a query to find all species in the same genus/family
-                parent_info = get_taxon_info(parent_taxid, email)
+                parent_info = get_taxon_info(parent_taxid, email, api_key)
                 parent_name = parent_info.get("scientific_name", "")
                 parent_rank = parent_info.get("rank", "")
-                
+
                 if parent_name:
                     # Search for all taxa under this parent
                     query = f"{parent_name}[{parent_rank}]"
+                    # Rate limiting before search
+                    time.sleep(0.11 if api_key else 0.34)
+
                     search_handle = Entrez.esearch(db="taxonomy", term=query, retmax=max_results + 1)
                     search_results = Entrez.read(search_handle)
                     search_handle.close()
-                    
+
                     child_ids = search_results.get("IdList", [])
-                    
+
                     # Filter out the original taxid
                     child_ids = [tid for tid in child_ids if tid != taxid]
-                    
+
                     # Get information for each child
                     for child_id in child_ids[:max_results]:
-                        child_info = get_taxon_info(child_id, email)
+                        child_info = get_taxon_info(child_id, email, api_key)
                         if child_info:
                             related_taxa.append(child_info)
         
@@ -376,6 +412,594 @@ def get_related_taxa(
     except Exception as e:
         logger.error(f"Error finding related taxa for {taxid}: {str(e)}")
         return []
+
+def get_related_taxa_weighted(
+    taxid: str,
+    email: str,
+    max_results: int = 10,
+    diversity_levels: Optional[List[str]] = None,
+    min_sequence_count: int = 5,
+    api_key: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Get phylogenetically weighted exclusion taxa with sequence availability.
+
+    This enhanced version prioritizes taxa by:
+    1. Phylogenetic proximity (closer relatives ranked higher)
+    2. Sequence availability (taxa with more sequences preferred)
+    3. Taxonomic diversity (spans multiple levels: genus, family, order)
+
+    Args:
+        taxid (str): NCBI TaxID for inclusion taxon
+        email (str): User's email address
+        max_results (int): Maximum number of related taxa to return
+        diversity_levels (Optional[List[str]]): Taxonomic ranks to sample
+            Default: ["genus", "family", "order"]
+        min_sequence_count (int): Minimum sequences required (default: 5)
+        api_key (Optional[str]): NCBI API key for higher rate limits
+
+    Returns:
+        List[Dict[str, Any]]: List of weighted taxa info with fields:
+            - taxid: str
+            - scientific_name: str
+            - rank: str
+            - phylogenetic_distance: int (lower = closer, in taxonomic steps)
+            - sequence_count: int (estimated)
+            - priority_score: float (higher = better candidate)
+            - lineage: str
+    """
+    if not email:
+        raise ValueError("Email address is required.")
+
+    if diversity_levels is None:
+        diversity_levels = ["genus", "family", "order"]
+
+    Entrez.email = email
+    if api_key:
+        Entrez.api_key = api_key
+
+    try:
+        # Get the taxonomy information for our target
+        logger.info(f"Fetching weighted related taxa for taxid {taxid}")
+        tax_info = get_taxon_info(taxid, email, api_key)
+
+        if not tax_info:
+            logger.error(f"Could not get taxonomy info for taxid {taxid}")
+            return []
+
+        inclusion_rank = tax_info.get("rank", "")
+        lineage = tax_info.get("lineage_ex", [])
+
+        logger.info(f"Inclusion taxon: {tax_info.get('scientific_name', 'Unknown')} (rank: {inclusion_rank})")
+
+        # Collect candidate taxa from multiple taxonomic levels
+        all_candidates = []
+
+        for level in diversity_levels:
+            logger.info(f"Searching for {level}-level relatives")
+
+            # Get siblings at this taxonomic level
+            level_siblings = get_related_taxa(
+                taxid=taxid,
+                email=email,
+                relationship="sibling",
+                rank=level,
+                max_results=50,  # Get more initially, will filter later
+                api_key=api_key
+            )
+
+            if not level_siblings:
+                logger.info(f"No {level}-level siblings found")
+                continue
+
+            # Calculate phylogenetic distance for each candidate
+            for sibling in level_siblings:
+                sibling_taxid = sibling.get("taxid")
+                sibling_name = sibling.get("scientific_name", "Unknown")
+                sibling_rank = sibling.get("rank", "")
+
+                # Calculate phylogenetic distance (number of taxonomic steps from inclusion)
+                # Distance is determined by the level at which we found the sibling
+                distance = _calculate_taxonomic_distance(level, inclusion_rank)
+
+                # Estimate sequence availability
+                try:
+                    sequence_count = _estimate_sequence_count(sibling_taxid, email, api_key=api_key)
+                except Exception as e:
+                    logger.warning(f"Could not estimate sequence count for {sibling_name}: {e}")
+                    sequence_count = 0
+
+                # Skip taxa with insufficient sequences
+                if sequence_count < min_sequence_count:
+                    logger.debug(f"Skipping {sibling_name} (only {sequence_count} sequences)")
+                    continue
+
+                # Calculate priority score
+                # Formula: priority = (1/distance) * log(seq_count + 1) * rank_weight
+                import math
+                rank_weights = {"genus": 1.0, "family": 0.8, "order": 0.6, "class": 0.4}
+                rank_weight = rank_weights.get(level, 0.5)
+
+                # Avoid division by zero
+                distance_score = 1.0 / max(distance, 1.0)
+                availability_score = math.log(sequence_count + 1)
+                priority_score = distance_score * availability_score * rank_weight
+
+                # Add to candidates
+                all_candidates.append({
+                    "taxid": sibling_taxid,
+                    "scientific_name": sibling_name,
+                    "rank": sibling_rank,
+                    "phylogenetic_distance": distance,
+                    "sequence_count": sequence_count,
+                    "priority_score": priority_score,
+                    "lineage": sibling.get("lineage", ""),
+                    "diversity_level": level
+                })
+
+                logger.debug(f"  {sibling_name}: distance={distance}, seqs={sequence_count}, score={priority_score:.2f}")
+
+        # Sort by priority score (descending)
+        all_candidates.sort(key=lambda x: x["priority_score"], reverse=True)
+
+        # Select top candidates, ensuring diversity across levels
+        selected_taxa = _select_diverse_taxa(all_candidates, max_results, diversity_levels)
+
+        logger.info(f"Selected {len(selected_taxa)} weighted exclusion taxa")
+        for taxon in selected_taxa:
+            logger.info(f"  {taxon['scientific_name']} ({taxon['diversity_level']}): "
+                       f"score={taxon['priority_score']:.2f}, seqs={taxon['sequence_count']}")
+
+        return selected_taxa
+
+    except Exception as e:
+        logger.error(f"Error finding weighted related taxa for {taxid}: {str(e)}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        return []
+
+def _calculate_taxonomic_distance(level: str, inclusion_rank: str) -> int:
+    """
+    Calculate phylogenetic distance in taxonomic steps.
+
+    Lower numbers indicate closer relationships.
+
+    Args:
+        level: Taxonomic level where sibling was found (genus, family, order)
+        inclusion_rank: Rank of the inclusion taxon
+
+    Returns:
+        int: Distance in taxonomic steps
+    """
+    # Standard taxonomic hierarchy
+    rank_hierarchy = {
+        "subspecies": 1,
+        "species": 2,
+        "genus": 3,
+        "family": 4,
+        "order": 5,
+        "class": 6,
+        "phylum": 7,
+        "kingdom": 8,
+        "superkingdom": 9
+    }
+
+    # Get numeric ranks
+    level_num = rank_hierarchy.get(level, 5)
+    inclusion_num = rank_hierarchy.get(inclusion_rank, 2)
+
+    # Distance is the absolute difference in rank levels
+    distance = abs(level_num - inclusion_num)
+
+    # If siblings are at the same level, distance is 1
+    if distance == 0:
+        distance = 1
+
+    return distance
+
+def _estimate_sequence_count(taxid: str, email: str, timeout: int = 5, api_key: Optional[str] = None) -> int:
+    """
+    Estimate the number of sequences available for a taxon.
+
+    Uses a quick NCBI ESearch query to count available sequences.
+
+    Args:
+        taxid: NCBI taxonomy ID
+        email: User's email
+        timeout: Maximum time to wait (seconds)
+        api_key: Optional NCBI API key
+
+    Returns:
+        int: Estimated sequence count
+    """
+    Entrez.email = email
+    if api_key:
+        Entrez.api_key = api_key
+
+    # Rate limiting
+    time.sleep(0.11 if api_key else 0.34)
+
+    try:
+        # Quick search to count sequences
+        query = f"txid{taxid}[Organism] AND biomol_genomic[PROP] NOT wgs[Filter]"
+
+        search_handle = Entrez.esearch(db="nucleotide", term=query, retmax=0)
+        search_results = Entrez.read(search_handle)
+        search_handle.close()
+
+        count = int(search_results.get("Count", 0))
+        return count
+
+    except Exception as e:
+        logger.debug(f"Error estimating sequence count for taxid {taxid}: {e}")
+        return 0
+
+def _select_diverse_taxa(
+    candidates: List[Dict[str, Any]],
+    max_results: int,
+    diversity_levels: List[str]
+) -> List[Dict[str, Any]]:
+    """
+    Select taxa ensuring diversity across taxonomic levels.
+
+    Algorithm:
+    - Allocate slots proportionally across diversity levels
+    - Within each level, select highest-scoring taxa
+    - If a level has fewer candidates than slots, redistribute
+
+    Args:
+        candidates: All candidate taxa (sorted by priority score)
+        max_results: Maximum number to select
+        diversity_levels: Taxonomic levels to sample
+
+    Returns:
+        List of selected taxa
+    """
+    if not candidates:
+        return []
+
+    # Group candidates by diversity level
+    by_level = {level: [] for level in diversity_levels}
+    for candidate in candidates:
+        level = candidate.get("diversity_level")
+        if level in by_level:
+            by_level[level].append(candidate)
+
+    # Calculate allocation per level
+    # Prioritize closer relatives (genus > family > order)
+    level_weights = {"genus": 0.5, "family": 0.3, "order": 0.2}
+
+    # Adjust weights based on availability
+    total_weight = 0
+    available_weights = {}
+    for level in diversity_levels:
+        if by_level[level]:  # Only include levels with candidates
+            weight = level_weights.get(level, 0.1)
+            available_weights[level] = weight
+            total_weight += weight
+
+    # Normalize weights
+    if total_weight > 0:
+        for level in available_weights:
+            available_weights[level] /= total_weight
+
+    # Allocate slots
+    selected = []
+    remaining_slots = max_results
+
+    for level in diversity_levels:
+        if not by_level[level] or remaining_slots <= 0:
+            continue
+
+        # Calculate number of slots for this level
+        target_slots = int(available_weights.get(level, 0) * max_results)
+        actual_slots = min(target_slots, len(by_level[level]), remaining_slots)
+
+        # Select top-scoring taxa from this level
+        selected.extend(by_level[level][:actual_slots])
+        remaining_slots -= actual_slots
+
+    # If we still have remaining slots, add highest-scoring candidates regardless of level
+    if remaining_slots > 0:
+        already_selected_ids = {t["taxid"] for t in selected}
+        for candidate in candidates:
+            if candidate["taxid"] not in already_selected_ids:
+                selected.append(candidate)
+                remaining_slots -= 1
+                if remaining_slots <= 0:
+                    break
+
+    return selected[:max_results]
+
+def intelligent_exclusion_selection(
+    inclusion_taxid: str,
+    email: str,
+    max_exclusion_taxa: int = 10,
+    require_sequences: bool = True,
+    min_sequence_count: int = 5,
+    tier_allocation: Optional[Dict[str, float]] = None,
+    api_key: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Intelligently select exclusion taxa using tiered phylogenetic strategy.
+
+    This function automatically builds a representative exclusion set by:
+    1. Determining the inclusion taxon's rank
+    2. Sampling taxa from multiple taxonomic levels (genus, family, order)
+    3. Allocating slots proportionally by tier (default: 50% genus, 30% family, 20% order)
+    4. Prioritizing by phylogenetic proximity and sequence availability
+
+    Args:
+        inclusion_taxid (str): NCBI TaxID for inclusion taxon
+        email (str): User's email for NCBI queries
+        max_exclusion_taxa (int): Maximum number of exclusion taxa (default: 10)
+        require_sequences (bool): Only include taxa with sufficient sequences (default: True)
+        min_sequence_count (int): Minimum sequences required per taxon (default: 5)
+        tier_allocation (Optional[Dict[str, float]]): Custom tier weights
+            Default: {"genus": 0.5, "family": 0.3, "order": 0.2}
+        api_key (Optional[str]): NCBI API key for higher rate limits
+
+    Returns:
+        Dict[str, Any]: Exclusion selection results with fields:
+            - exclusion_taxids: List[str] - Selected taxon IDs
+            - taxa_info: List[Dict] - Full metadata for each taxon
+            - selection_strategy: str - Description of selection approach
+            - coverage_score: float - Phylogenetic breadth (0-1)
+            - inclusion_info: Dict - Info about inclusion taxon
+            - tier_summary: Dict - Count of taxa per tier
+
+    Example:
+        >>> result = intelligent_exclusion_selection(
+        ...     inclusion_taxid="689",  # Vibrio mediterranei
+        ...     email="user@example.com",
+        ...     max_exclusion_taxa=10
+        ... )
+        >>> print(f"Selected {len(result['exclusion_taxids'])} exclusion taxa")
+        >>> print(f"Coverage score: {result['coverage_score']:.2f}")
+    """
+    if not email:
+        raise ValueError("Email address is required.")
+
+    if tier_allocation is None:
+        tier_allocation = {"genus": 0.5, "family": 0.3, "order": 0.2}
+
+    Entrez.email = email
+    if api_key:
+        Entrez.api_key = api_key
+
+    try:
+        # Get information about the inclusion taxon
+        logger.info(f"Starting intelligent exclusion selection for taxid {inclusion_taxid}")
+        inclusion_info = get_taxon_info(inclusion_taxid, email, api_key)
+
+        if not inclusion_info:
+            return {
+                "error": f"Could not retrieve information for taxid {inclusion_taxid}",
+                "exclusion_taxids": [],
+                "taxa_info": []
+            }
+
+        inclusion_rank = inclusion_info.get("rank", "")
+        inclusion_name = inclusion_info.get("scientific_name", "Unknown")
+
+        logger.info(f"Inclusion taxon: {inclusion_name} (rank: {inclusion_rank})")
+
+        # Determine appropriate diversity levels based on inclusion rank
+        diversity_levels = _determine_diversity_levels(inclusion_rank)
+        logger.info(f"Using diversity levels: {diversity_levels}")
+
+        # Calculate target number of taxa per tier
+        tier_targets = {}
+        total_weight = sum(tier_allocation.get(level, 0) for level in diversity_levels)
+
+        for level in diversity_levels:
+            weight = tier_allocation.get(level, 0)
+            if total_weight > 0:
+                tier_targets[level] = max(1, int((weight / total_weight) * max_exclusion_taxa))
+            else:
+                tier_targets[level] = max(1, max_exclusion_taxa // len(diversity_levels))
+
+        logger.info(f"Target allocation: {tier_targets}")
+
+        # Get weighted related taxa spanning all diversity levels
+        all_weighted_taxa = get_related_taxa_weighted(
+            taxid=inclusion_taxid,
+            email=email,
+            max_results=max_exclusion_taxa * 3,  # Get more candidates than needed
+            diversity_levels=diversity_levels,
+            min_sequence_count=min_sequence_count if require_sequences else 0,
+            api_key=api_key
+        )
+
+        if not all_weighted_taxa:
+            logger.warning("No suitable exclusion taxa found with current criteria")
+
+            # Try again with relaxed requirements
+            if require_sequences and min_sequence_count > 1:
+                logger.info("Retrying with relaxed sequence requirements...")
+                all_weighted_taxa = get_related_taxa_weighted(
+                    taxid=inclusion_taxid,
+                    email=email,
+                    max_results=max_exclusion_taxa * 2,
+                    diversity_levels=diversity_levels,
+                    min_sequence_count=1,  # Very relaxed
+                    api_key=api_key
+                )
+
+        if not all_weighted_taxa:
+            # Last resort: try with even broader levels
+            logger.warning("Still no taxa found, trying broader taxonomic levels...")
+            broader_levels = diversity_levels + ["class", "phylum"]
+            all_weighted_taxa = get_related_taxa_weighted(
+                taxid=inclusion_taxid,
+                email=email,
+                max_results=max_exclusion_taxa,
+                diversity_levels=broader_levels,
+                min_sequence_count=0,  # No minimum
+                api_key=api_key
+            )
+
+        if not all_weighted_taxa:
+            return {
+                "error": "Could not find any suitable exclusion taxa",
+                "exclusion_taxids": [],
+                "taxa_info": [],
+                "inclusion_info": inclusion_info,
+                "selection_strategy": "Failed - no suitable relatives found"
+            }
+
+        # Select top taxa (already sorted by priority score in get_related_taxa_weighted)
+        selected_taxa = all_weighted_taxa[:max_exclusion_taxa]
+
+        # Extract taxids
+        exclusion_taxids = [taxon["taxid"] for taxon in selected_taxa]
+
+        # Calculate coverage score based on phylogenetic diversity
+        coverage_score = _calculate_coverage_score(selected_taxa, diversity_levels)
+
+        # Summarize tier distribution
+        tier_summary = {}
+        for level in diversity_levels:
+            count = sum(1 for t in selected_taxa if t.get("diversity_level") == level)
+            tier_summary[level] = count
+
+        # Build selection strategy description
+        strategy_parts = []
+        for level, count in tier_summary.items():
+            if count > 0:
+                strategy_parts.append(f"{count} {level}-level")
+
+        selection_strategy = f"Tiered selection: {', '.join(strategy_parts)} relatives"
+
+        logger.info(f"Selected {len(selected_taxa)} exclusion taxa")
+        logger.info(f"Tier distribution: {tier_summary}")
+        logger.info(f"Coverage score: {coverage_score:.2f}")
+
+        return {
+            "exclusion_taxids": exclusion_taxids,
+            "taxa_info": selected_taxa,
+            "selection_strategy": selection_strategy,
+            "coverage_score": coverage_score,
+            "inclusion_info": inclusion_info,
+            "tier_summary": tier_summary,
+            "diversity_levels": diversity_levels
+        }
+
+    except Exception as e:
+        logger.error(f"Error in intelligent exclusion selection: {str(e)}")
+        import traceback
+        logger.debug(traceback.format_exc())
+
+        return {
+            "error": str(e),
+            "exclusion_taxids": [],
+            "taxa_info": []
+        }
+
+def _determine_diversity_levels(inclusion_rank: str) -> List[str]:
+    """
+    Determine appropriate diversity levels based on inclusion taxon rank.
+
+    Args:
+        inclusion_rank: Rank of the inclusion taxon
+
+    Returns:
+        List of taxonomic ranks to sample for exclusion
+
+    Examples:
+        - If inclusion is species → sample genus, family, order
+        - If inclusion is genus → sample family, order, class
+        - If inclusion is family → sample order, class, phylum
+    """
+    rank_hierarchy = [
+        "subspecies",
+        "species",
+        "genus",
+        "family",
+        "order",
+        "class",
+        "phylum",
+        "kingdom"
+    ]
+
+    # Find the index of the inclusion rank
+    try:
+        inclusion_idx = rank_hierarchy.index(inclusion_rank)
+    except ValueError:
+        # Default to species level if rank not recognized
+        logger.warning(f"Unknown rank '{inclusion_rank}', defaulting to species-level sampling")
+        inclusion_idx = 1
+
+    # Select 3 levels above the inclusion rank
+    diversity_levels = []
+    for offset in [1, 2, 3]:
+        target_idx = inclusion_idx + offset
+        if target_idx < len(rank_hierarchy):
+            diversity_levels.append(rank_hierarchy[target_idx])
+
+    # Ensure we have at least some levels
+    if not diversity_levels:
+        diversity_levels = ["genus", "family", "order"]
+
+    # Limit to commonly used levels
+    valid_levels = ["genus", "family", "order", "class", "phylum"]
+    diversity_levels = [level for level in diversity_levels if level in valid_levels]
+
+    if not diversity_levels:
+        diversity_levels = ["genus", "family", "order"]
+
+    return diversity_levels
+
+def _calculate_coverage_score(selected_taxa: List[Dict[str, Any]], diversity_levels: List[str]) -> float:
+    """
+    Calculate phylogenetic coverage score based on diversity.
+
+    Score factors:
+    1. Number of taxonomic levels represented (more = better)
+    2. Number of taxa (more = better, up to diminishing returns)
+    3. Spread of phylogenetic distances (wider = better)
+
+    Args:
+        selected_taxa: List of selected exclusion taxa with metadata
+        diversity_levels: Target diversity levels
+
+    Returns:
+        float: Coverage score between 0 and 1
+            - 1.0 = Excellent coverage across all levels
+            - 0.7-0.9 = Good coverage
+            - 0.5-0.7 = Fair coverage
+            - <0.5 = Limited coverage
+    """
+    if not selected_taxa:
+        return 0.0
+
+    # Factor 1: Level diversity (0-0.4 points)
+    levels_represented = set(t.get("diversity_level") for t in selected_taxa)
+    level_score = len(levels_represented) / max(len(diversity_levels), 1)
+    level_score = min(level_score, 1.0) * 0.4
+
+    # Factor 2: Number of taxa (0-0.3 points, with diminishing returns)
+    import math
+    taxa_count = len(selected_taxa)
+    # Use logarithmic scale to give diminishing returns after ~10 taxa
+    taxa_score = min(math.log(taxa_count + 1) / math.log(15), 1.0) * 0.3
+
+    # Factor 3: Distance spread (0-0.3 points)
+    distances = [t.get("phylogenetic_distance", 1) for t in selected_taxa]
+    if distances:
+        min_dist = min(distances)
+        max_dist = max(distances)
+        distance_range = max_dist - min_dist
+
+        # Ideal range is having both close (distance=1) and far (distance>=3) relatives
+        ideal_range = 3
+        distance_score = min(distance_range / ideal_range, 1.0) * 0.3
+    else:
+        distance_score = 0.0
+
+    total_score = level_score + taxa_score + distance_score
+
+    return round(total_score, 2)
 
 def suggest_marker_genes(taxid: str, email: str) -> List[Dict[str, str]]:
     """
@@ -449,37 +1073,44 @@ def fetch_cds_sequences(
     email: str,
     max_seqs: int = 100,
     output_file: Optional[str] = None,
-    database: str = "nuccore"
+    database: str = "nuccore",
+    api_key: Optional[str] = None
 ) -> List[SeqRecord]:
     """
     Fetch coding sequences (CDS) with specific gene annotation from NCBI RefSeq.
     Only downloads the annotated gene sequences, not entire genomes.
-    
+
     Args:
         cds_name (str): Name of the CDS to search for (e.g., 'amoA')
         email (str): User's email address (required by NCBI)
         max_seqs (int): Maximum number of sequences to fetch
         output_file (Optional[str]): Output file path, if None will generate based on cds_name
         database (str): NCBI database to search (default: nuccore)
-        
+        api_key (Optional[str]): NCBI API key for higher rate limits
+
     Returns:
         List[SeqRecord]: List of retrieved CDS sequences
     """
     if not email:
         raise ValueError("Email address is required for NCBI queries")
-        
+
     Entrez.email = email
+    if api_key:
+        Entrez.api_key = api_key
     
     # Generate output filename if not provided
     if not output_file:
         output_file = f"{cds_name}_refseq_{max_seqs}.fna"
     
     logger.info(f"Searching for CDS '{cds_name}' in NCBI (max: {max_seqs} sequences)")
-    
+
     # Construct search query for entries with specified CDS
-    query = f"{cds_name}[Gene] OR {cds_name}[Product] OR {cds_name}[Function] AND CDS[Feature Key] NOT wgs[Filter]"
+    query = f"({cds_name}[Gene] OR {cds_name}[Product] OR {cds_name}[Function]) AND CDS[Feature Key] NOT wgs[Filter]"
     
     try:
+        # Rate limiting before search
+        time.sleep(0.11 if api_key else 0.34)
+
         # Search for matching entries
         search_handle = Entrez.esearch(db=database, term=query, retmax=max_seqs)
         search_results = Entrez.read(search_handle)
@@ -490,9 +1121,12 @@ def fetch_cds_sequences(
         
         if not ids:
             logger.warning(f"No CDS entries found for '{cds_name}'")
-            
+
             # Try with a more general search
             alt_query = f"{cds_name} AND genbank[Filter]"
+            # Rate limiting before alternative search
+            time.sleep(0.11 if api_key else 0.34)
+
             search_handle = Entrez.esearch(db=database, term=alt_query, retmax=max_seqs)
             search_results = Entrez.read(search_handle)
             search_handle.close()
@@ -514,9 +1148,12 @@ def fetch_cds_sequences(
         for i in range(0, len(ids), batch_size):
             batch_ids = ids[i:i+batch_size]
             logger.info(f"Fetching batch {i//batch_size + 1}/{(len(ids)-1)//batch_size + 1}...")
-            
+
+            # Rate limiting before fetch
+            time.sleep(0.11 if api_key else 0.34)
+
             # Fetch the GenBank records that contain the CDS features
-            fetch_handle = Entrez.efetch(db=database, id=",".join(batch_ids), 
+            fetch_handle = Entrez.efetch(db=database, id=",".join(batch_ids),
                                         rettype="gb", retmode="text")
             gb_records = list(SeqIO.parse(fetch_handle, "genbank"))
             fetch_handle.close()
@@ -727,21 +1364,23 @@ def download_genome(
         logger.error(f"Error downloading genome: {str(e)}")
         raise
         
-def ensure_sequences_are_defined(sequences: List[SeqRecord], email: str) -> List[SeqRecord]:
+def ensure_sequences_are_defined(sequences: List[SeqRecord], email: str, api_key: Optional[str] = None) -> List[SeqRecord]:
     """
     Ensure all sequences have defined content before saving.
-    
+
     Args:
         sequences: List of sequence records
-        
+        email: User's email address
+        api_key: Optional NCBI API key
+
     Returns:
         List of validated sequence records
     """
     from Bio.Seq import UndefinedSequenceError, Seq
     from Bio.SeqRecord import SeqRecord
-    
+
     valid_sequences = []
-    
+
     for i, record in enumerate(sequences):
         try:
             # Check if sequence is defined by attempting to convert to string
@@ -754,13 +1393,13 @@ def ensure_sequences_are_defined(sequences: List[SeqRecord], email: str) -> List
                 # Only try to fetch it if it looks like a sequence accession (and not a genome assembly)
                 if not accession.endswith("000000000"):
                     logger.info(f"Trying to fetch sequence {accession} directly")
-                    direct_record = fetch_sequence_by_accession(accession, email)
+                    direct_record = fetch_sequence_by_accession(accession, email, api_key=api_key)
                     valid_sequences.append(direct_record)
                 else:
                     logger.warning(f"Skipping genome assembly ID {accession}")
             except Exception as e:
                 logger.warning(f"Failed to fetch direct sequence for {accession}: {e}")
-            
+
     return valid_sequences
     
 def load_local_fasta(fasta_path: str) -> List[SeqRecord]:
