@@ -1,0 +1,13 @@
+=== Assay Design Results ===
+        
+Target: Taxid:216715 (taxid: 216715)
+
+
+ERROR: Could not design suitable assay
+
+Reason: Could not find specific regions suitable for assay design
+
+Please consider the following options:
+1. Try a different target gene
+2. Adjust parameters (e.g., increase maximum amplicon length)
+3. Use manual exclusion instead of auto-exclusion

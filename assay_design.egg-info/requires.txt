@@ -1,3 +1,4 @@
 biopython>=1.79
 click>=8.0
 numpy>=1.20.0
+pybloom-live>=3.0.0

@@ -84,8 +84,8 @@ Examples:
     # Required arguments
     required = parser.add_argument_group('required arguments')
     required.add_argument(
-        '--email', 
-        type=str, 
+        '--email',
+        type=str,
         required=True,
         help='Your email for NCBI queries (required by NCBI)'
     )
@@ -94,6 +94,13 @@ Examples:
         type=str,
         required=True,
         help='Output directory for assay design results'
+    )
+
+    # Optional API key for improved NCBI rate limits
+    parser.add_argument(
+        '--api-key',
+        type=str,
+        help='NCBI API key for higher rate limits (get one at https://www.ncbi.nlm.nih.gov/account/)'
     )
     
     # Make inclusion group conditionally required (required if --cds isn't specified)
@@ -603,7 +610,8 @@ def main():
                     cds_name=args.cds,
                     email=args.email,
                     max_seqs=getattr(args, 'max_seqs', 100),
-                    output_file=output_file
+                    output_file=output_file,
+                    api_key=getattr(args, 'api_key', None)
                 )
             except Exception as e:
                 logger.error(f"Error fetching CDS sequences: {e}")
@@ -669,7 +677,7 @@ def main():
         
         # Get taxonomy information for the target
         try:
-            target_info = get_taxon_info(inclusion_taxid, args.email)
+            target_info = get_taxon_info(inclusion_taxid, args.email, api_key=getattr(args, 'api_key', None))
             target_name = target_info.get("scientific_name", f"Taxid:{inclusion_taxid}")
             logger.info(f"Target organism {target_name} ({inclusion_taxid})")
         except Exception as e:
@@ -692,7 +700,8 @@ def main():
                         email=args.email,
                         max_exclusion_taxa=args.max_exclusion_taxa,
                         require_sequences=True,
-                        min_sequence_count=5
+                        min_sequence_count=5,
+                        api_key=getattr(args, 'api_key', None)
                     )
 
                     if 'error' not in exclusion_result:
@@ -732,7 +741,8 @@ def main():
                     email=args.email,
                     relationship="sibling",
                     rank=rank,
-                    max_results=args.auto_exclusion_count
+                    max_results=args.auto_exclusion_count,
+                    api_key=getattr(args, 'api_key', None)
                 )
 
                 for taxon in related_taxa:
@@ -746,7 +756,7 @@ def main():
             if not exclusion_info and exclusion_taxids:
                 for taxid in exclusion_taxids:
                     try:
-                        taxon_info = get_taxon_info(taxid, args.email)
+                        taxon_info = get_taxon_info(taxid, args.email, api_key=getattr(args, 'api_key', None))
                         exclusion_info.append(taxon_info)
                         logger.info(f"Exclusion taxon: {taxon_info.get('scientific_name')} ({taxid})")
                     except Exception as e:
@@ -774,13 +784,15 @@ def main():
                         taxid=inclusion_taxid,
                         gene_name=selected_gene,
                         email=args.email,
-                        max_records=args.max_seq_count * 2
+                        max_records=args.max_seq_count * 2,
+                        api_key=getattr(args, 'api_key', None)
                     )
                 else:
                     inclusion_sequences = fetch_sequences_for_taxid(
                         taxid=inclusion_taxid,
                         email=args.email,
-                        max_records=args.max_seq_count * 2
+                        max_records=args.max_seq_count * 2,
+                        api_key=getattr(args, 'api_key', None)
                     )
 
                 logger.info(f"Retrieved {len(inclusion_sequences)} sequences for inclusion taxid")
@@ -809,13 +821,15 @@ def main():
                         taxid=taxid,
                         gene_name=args.gene,
                         email=args.email,
-                        max_records=args.max_seq_count
+                        max_records=args.max_seq_count,
+                        api_key=getattr(args, 'api_key', None)
                     )
                 else:
                     sequences = fetch_sequences_for_taxid(
                         taxid=taxid,
                         email=args.email,
-                        max_records=args.max_seq_count
+                        max_records=args.max_seq_count,
+                        api_key=getattr(args, 'api_key', None)
                     )
                     
                 exclusion_sequences.extend(sequences)

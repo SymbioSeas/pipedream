@@ -3,10 +3,13 @@ README.md
 pyproject.toml
 setup.cfg
 assay_design/__init__.py
+assay_design/cache_manager.py
 assay_design/cli.py
 assay_design/data_retrieval.py
+assay_design/gene_selection.py
 assay_design/hierarchical_search.py
 assay_design/io_utils.py
+assay_design/kmer_analysis.py
 assay_design/lsh_sequence_search.py
 assay_design/primer_probe_design.py
 assay_design/specificity_validation.py
@@ -20,6 +23,10 @@ assay_design.egg-info/requires.txt
 assay_design.egg-info/top_level.txt
 assay_design/utils/__init__.py
 tests/test_data_retrieval.py
+tests/test_data_retrieval_enhanced.py
+tests/test_gene_selection.py
+tests/test_gene_selection_phase2.py
 tests/test_primer_design.py
 tests/test_specificity_validation.py
 tests/test_target_identification.py
+tests/test_weighted_taxa.py
