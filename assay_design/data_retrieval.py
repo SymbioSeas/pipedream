@@ -286,17 +286,19 @@ def fetch_marker_genes(
     taxid: str,
     email: str,
     marker_gene: str = "16S ribosomal RNA",
-    max_records: int = 50
+    max_records: int = 50,
+    api_key: Optional[str] = None
 ) -> List[SeqRecord]:
     """
     Fetch common marker gene sequences for a specific taxon.
-    
+
     Args:
         taxid (str): NCBI TaxID
         email (str): User's email address
         marker_gene (str): Marker gene to fetch (default: 16S rRNA)
         max_records (int): Maximum number of sequences to fetch
-        
+        api_key (Optional[str]): NCBI API key for higher rate limits
+
     Returns:
         List[SeqRecord]: List of marker gene sequences
     """
@@ -306,7 +308,8 @@ def fetch_marker_genes(
         taxid=taxid,
         email=email,
         query_term=query,
-        max_records=max_records
+        max_records=max_records,
+        api_key=api_key
     )
 
 def get_taxon_info(taxid: str, email: str, api_key: Optional[str] = None) -> Dict[str, Any]:
@@ -1072,19 +1075,20 @@ def _calculate_coverage_score(selected_taxa: List[Dict[str, Any]], diversity_lev
 
     return round(total_score, 2)
 
-def suggest_marker_genes(taxid: str, email: str) -> List[Dict[str, str]]:
+def suggest_marker_genes(taxid: str, email: str, api_key: Optional[str] = None) -> List[Dict[str, str]]:
     """
     Suggest appropriate marker genes for a given taxon.
-    
+
     Args:
         taxid (str): NCBI TaxID
         email (str): User's email address
-        
+        api_key (Optional[str]): NCBI API key for higher rate limits
+
     Returns:
         List[Dict[str, str]]: List of suggested marker genes with descriptions
     """
     # Get taxonomy info to determine the organism type
-    tax_info = get_taxon_info(taxid, email)
+    tax_info = get_taxon_info(taxid, email, api_key)
     
     if not tax_info:
         return []
@@ -1362,24 +1366,33 @@ def download_genome(
     accession_or_taxid: str,
     email: str,
     output_path: Optional[str] = None,
-    is_taxid: bool = False
+    is_taxid: bool = False,
+    api_key: Optional[str] = None
 ) -> str:
     """
     Download a complete genome by accession or taxid.
-    
+
     Args:
         accession_or_taxid (str): NCBI accession or taxid
         email (str): User's email address
         output_path (Optional[str]): Path to save the genome
         is_taxid (bool): Whether the identifier is a taxid
-        
+        api_key (Optional[str]): NCBI API key for higher rate limits
+
     Returns:
         str: Path to the saved genome file
     """
     import os
-    
+
     Entrez.email = email
-    
+    api_key = _clean_api_key(api_key)
+    if api_key:
+        Entrez.api_key = api_key
+    else:
+        # Explicitly clear API key to avoid using stale/invalid keys from previous calls
+        if hasattr(Entrez, 'api_key'):
+            delattr(Entrez, 'api_key')
+
     try:
         if is_taxid:
             # Search for the reference genome for this taxid
