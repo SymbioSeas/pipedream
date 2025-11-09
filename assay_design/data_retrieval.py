@@ -75,6 +75,10 @@ def fetch_sequence_by_accession(accession_id: str, email: str, db: str = "nucleo
     api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
+    else:
+        # Explicitly clear API key to avoid using stale/invalid keys from previous calls
+        if hasattr(Entrez, 'api_key'):
+            delattr(Entrez, 'api_key')
 
     # Rate limiting
     time.sleep(0.11 if api_key else 0.34)
@@ -125,7 +129,11 @@ def fetch_sequences_for_taxid(
     api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
-    
+    else:
+        # Explicitly clear API key to avoid using stale/invalid keys from previous calls
+        if hasattr(Entrez, 'api_key'):
+            delattr(Entrez, 'api_key')
+
     try:
         # Build the search query
         if query_term is None:
@@ -320,6 +328,10 @@ def get_taxon_info(taxid: str, email: str, api_key: Optional[str] = None) -> Dic
     api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
+    else:
+        # Explicitly clear API key to avoid using stale/invalid keys from previous calls
+        if hasattr(Entrez, 'api_key'):
+            delattr(Entrez, 'api_key')
 
     # Rate limiting: 3 requests/second without API key, 10/second with API key
     time.sleep(0.11 if api_key else 0.34)
@@ -393,6 +405,10 @@ def get_related_taxa(
     api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
+    else:
+        # Explicitly clear API key to avoid using stale/invalid keys from previous calls
+        if hasattr(Entrez, 'api_key'):
+            delattr(Entrez, 'api_key')
 
     try:
         # First get the taxonomy information for our target
@@ -498,6 +514,10 @@ def get_related_taxa_weighted(
     api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
+    else:
+        # Explicitly clear API key to avoid using stale/invalid keys from previous calls
+        if hasattr(Entrez, 'api_key'):
+            delattr(Entrez, 'api_key')
 
     try:
         # Get the taxonomy information for our target
@@ -657,6 +677,10 @@ def _estimate_sequence_count(taxid: str, email: str, timeout: int = 5, api_key: 
     api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
+    else:
+        # Explicitly clear API key to avoid using stale/invalid keys from previous calls
+        if hasattr(Entrez, 'api_key'):
+            delattr(Entrez, 'api_key')
 
     # Rate limiting
     time.sleep(0.11 if api_key else 0.34)
@@ -809,6 +833,10 @@ def intelligent_exclusion_selection(
     api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
+    else:
+        # Explicitly clear API key to avoid using stale/invalid keys from previous calls
+        if hasattr(Entrez, 'api_key'):
+            delattr(Entrez, 'api_key')
 
     try:
         # Get information about the inclusion taxon
@@ -1141,6 +1169,10 @@ def fetch_cds_sequences(
     api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
+    else:
+        # Explicitly clear API key to avoid using stale/invalid keys from previous calls
+        if hasattr(Entrez, 'api_key'):
+            delattr(Entrez, 'api_key')
 
     # Generate output filename if not provided
     if not output_file:
