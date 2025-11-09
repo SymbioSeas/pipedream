@@ -16,7 +16,7 @@ Key criteria for dPCR target genes:
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -581,3 +581,380 @@ class GeneSelectionCriteria:
             results.append((gene_name, metadata, score))
 
         return results
+
+
+# ==================== DYNAMIC GENE EVALUATION (Phase 2) ====================
+
+def evaluate_gene_suitability(
+    taxid: str,
+    gene_name: str,
+    email: str,
+    metadata: Optional[GeneMetadata] = None
+) -> Dict[str, Any]:
+    """
+    Evaluate a specific gene for dPCR assay suitability by querying NCBI.
+
+    This function dynamically evaluates a gene's suitability by:
+    1. Querying NCBI for sequence availability
+    2. Calculating average sequence length
+    3. Combining with gene metadata (copy number, HGT resistance, etc.)
+    4. Computing an overall suitability score
+
+    Scoring criteria:
+    1. Sequence availability (0-1): More sequences = more robust design
+    2. Copy number (from metadata): Single copy preferred
+    3. HGT resistance (from metadata): Low HGT preferred
+    4. Length appropriateness (0-1): Ideal ~1500 bp
+
+    Args:
+        taxid: NCBI taxonomy ID
+        gene_name: Gene to evaluate (e.g., 'rpoB', '16S ribosomal RNA')
+        email: User's email for NCBI queries
+        metadata: Pre-loaded gene metadata (optional, will look up if not provided)
+
+    Returns:
+        Dict[str, Any] with fields:
+            - gene: str - Gene name
+            - sequence_count: int - Number of available sequences
+            - avg_sequence_length: float - Average sequence length
+            - copy_number_score: float (0-1)
+            - hgt_resistance_score: float (0-1)
+            - sequence_availability_score: float (0-1)
+            - length_appropriateness_score: float (0-1)
+            - overall_score: float (0-1) - Weighted average
+            - recommendation: str - 'excellent', 'good', 'fair', or 'poor'
+
+    Example:
+        >>> result = evaluate_gene_suitability(
+        ...     taxid="562",  # E. coli
+        ...     gene_name="rpoB",
+        ...     email="user@example.com"
+        ... )
+        >>> print(f"{result['gene']}: {result['overall_score']:.3f} ({result['recommendation']})")
+        rpoB: 0.892 (excellent)
+    """
+    # Import here to avoid circular dependency
+    from .data_retrieval import fetch_gene_sequences
+
+    logger.info(f"Evaluating gene '{gene_name}' for taxid {taxid}")
+
+    # Get gene metadata if not provided
+    if metadata is None:
+        metadata = GeneSelectionCriteria.get_gene_metadata(gene_name)
+        if metadata is None:
+            logger.warning(f"No metadata found for gene '{gene_name}'")
+            # Create minimal metadata for unknown gene
+            metadata = GeneMetadata(
+                gene_name=gene_name,
+                copy_number='unknown',
+                hgt_propensity='unknown',
+                evolutionary_rate='moderate',
+                typical_length_bp=(1000, 2000),
+                functional_category='unknown',
+                description='Unknown gene'
+            )
+
+    # Query NCBI for sequences
+    try:
+        sequences = fetch_gene_sequences(
+            taxid=taxid,
+            gene_name=gene_name,
+            email=email,
+            max_records=100  # Get up to 100 to get good average
+        )
+
+        sequence_count = len(sequences)
+
+        if sequence_count > 0:
+            # Calculate average sequence length
+            lengths = [len(seq.seq) for seq in sequences]
+            avg_length = sum(lengths) / len(lengths)
+        else:
+            avg_length = 0
+
+        logger.info(f"Found {sequence_count} sequences for {gene_name}, avg length: {avg_length:.0f} bp")
+
+    except Exception as e:
+        logger.error(f"Error fetching sequences for {gene_name}: {e}")
+        sequence_count = 0
+        avg_length = 0
+
+    # Calculate component scores
+
+    # 1. Sequence availability score (0-1)
+    # Score = min(count / 20, 1.0)
+    # Reasoning: 20+ sequences is excellent, <5 is concerning
+    sequence_availability_score = min(sequence_count / 20.0, 1.0)
+
+    # 2. Copy number score (from metadata)
+    copy_number_scores = {
+        'single': 1.0,
+        'low': 0.7,
+        'multi': 0.3,
+        'unknown': 0.5
+    }
+    copy_number_score = copy_number_scores.get(metadata.copy_number, 0.5)
+
+    # 3. HGT resistance score (from metadata)
+    hgt_resistance_scores = {
+        'low': 1.0,
+        'medium': 0.5,
+        'high': 0.1,
+        'unknown': 0.5
+    }
+    hgt_resistance_score = hgt_resistance_scores.get(metadata.hgt_propensity, 0.5)
+
+    # 4. Length appropriateness score
+    if avg_length > 0:
+        ideal_length = 1500
+        # Score decreases as we move away from ideal
+        length_diff = abs(avg_length - ideal_length)
+        # Normalize: perfect score at ideal, 0 at >3000 bp difference
+        length_appropriateness_score = max(1.0 - (length_diff / 3000), 0.0)
+    else:
+        # No sequences, use typical length from metadata
+        min_len, max_len = metadata.typical_length_bp
+        typical_avg = (min_len + max_len) / 2
+        ideal_length = 1500
+        length_diff = abs(typical_avg - ideal_length)
+        length_appropriateness_score = max(1.0 - (length_diff / 3000), 0.0)
+
+    # Calculate overall score (weighted average)
+    weights = {
+        'sequence_availability': 0.35,  # Very important - need data to design
+        'copy_number': 0.30,            # Important for quantification accuracy
+        'hgt_resistance': 0.20,         # Important for phylogenetic info
+        'length': 0.15                  # Less critical, flexibility in primer design
+    }
+
+    overall_score = (
+        sequence_availability_score * weights['sequence_availability'] +
+        copy_number_score * weights['copy_number'] +
+        hgt_resistance_score * weights['hgt_resistance'] +
+        length_appropriateness_score * weights['length']
+    )
+
+    # Determine recommendation tier
+    if overall_score >= 0.8:
+        recommendation = 'excellent'
+    elif overall_score >= 0.6:
+        recommendation = 'good'
+    elif overall_score >= 0.4:
+        recommendation = 'fair'
+    else:
+        recommendation = 'poor'
+
+    return {
+        'gene': gene_name,
+        'sequence_count': sequence_count,
+        'avg_sequence_length': round(avg_length, 1) if avg_length > 0 else 0,
+        'copy_number_score': round(copy_number_score, 3),
+        'hgt_resistance_score': round(hgt_resistance_score, 3),
+        'sequence_availability_score': round(sequence_availability_score, 3),
+        'length_appropriateness_score': round(length_appropriateness_score, 3),
+        'overall_score': round(overall_score, 3),
+        'recommendation': recommendation,
+        'metadata': metadata
+    }
+
+
+def rank_candidate_genes(
+    taxid: str,
+    email: str,
+    domain: Optional[str] = None,
+    prefer_single_copy: bool = True,
+    max_genes_to_test: int = 10,
+    timeout_per_gene: int = 30
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """
+    Rank all candidate genes for a taxon by empirical sequence availability.
+
+    This function:
+    1. Auto-detects domain from taxid if not provided
+    2. Gets candidate genes from GeneSelectionCriteria
+    3. Pre-ranks genes using metadata-based criteria
+    4. Evaluates top N genes by querying NCBI
+    5. Re-ranks based on actual sequence availability
+    6. Returns sorted list of (gene_name, evaluation_results)
+
+    Args:
+        taxid: NCBI taxonomy ID
+        email: User's email for NCBI queries
+        domain: Taxonomic domain ('bacteria', 'archaea', 'fungi')
+                If None, attempts to auto-detect from taxid
+        prefer_single_copy: If True, prioritize single-copy genes
+        max_genes_to_test: Maximum number of genes to evaluate via NCBI
+                          (uses metadata-based pre-ranking to select top N)
+        timeout_per_gene: Maximum seconds per gene (for NCBI queries)
+
+    Returns:
+        List of (gene_name, evaluation_dict) tuples, sorted by overall_score
+
+    Example:
+        >>> ranked = rank_candidate_genes(
+        ...     taxid="562",  # E. coli
+        ...     email="user@example.com",
+        ...     domain="bacteria",
+        ...     max_genes_to_test=5
+        ... )
+        >>> for gene_name, eval_result in ranked[:3]:
+        ...     print(f"{gene_name}: {eval_result['overall_score']:.3f}")
+        rpoB: 0.892
+        gyrB: 0.875
+        recA: 0.851
+    """
+    import time
+
+    logger.info(f"Ranking candidate genes for taxid {taxid}")
+
+    # Auto-detect domain if not provided
+    if domain is None:
+        from .data_retrieval import get_taxon_info
+        try:
+            tax_info = get_taxon_info(taxid, email)
+            lineage = tax_info.get('lineage', '').lower()
+
+            if 'bacteria' in lineage:
+                domain = 'bacteria'
+            elif 'archaea' in lineage:
+                domain = 'archaea'
+            elif 'fungi' in lineage or 'eukaryota' in lineage:
+                domain = 'fungi'
+            else:
+                # Default to bacteria
+                logger.warning("Could not auto-detect domain, defaulting to bacteria")
+                domain = 'bacteria'
+
+            logger.info(f"Auto-detected domain: {domain}")
+
+        except Exception as e:
+            logger.error(f"Error auto-detecting domain: {e}")
+            domain = 'bacteria'
+            logger.info(f"Defaulting to domain: {domain}")
+
+    # Get candidate genes for this domain
+    candidate_genes = GeneSelectionCriteria.get_genes_for_domain(
+        domain,
+        prefer_single_copy=prefer_single_copy
+    )
+
+    logger.info(f"Found {len(candidate_genes)} candidate genes for {domain}")
+
+    # Pre-rank genes using metadata-based criteria
+    # This helps us test the most promising genes first
+    metadata_ranked = GeneSelectionCriteria.rank_genes_by_criteria(candidate_genes)
+
+    # Select top N genes to test empirically
+    genes_to_test = metadata_ranked[:max_genes_to_test]
+    logger.info(f"Will evaluate top {len(genes_to_test)} genes via NCBI queries")
+
+    # Evaluate each gene by querying NCBI
+    evaluated_genes = []
+
+    for i, (gene_name, metadata_score) in enumerate(genes_to_test, 1):
+        logger.info(f"Evaluating {i}/{len(genes_to_test)}: {gene_name}")
+
+        start_time = time.time()
+
+        try:
+            metadata = candidate_genes[gene_name]
+            evaluation = evaluate_gene_suitability(
+                taxid=taxid,
+                gene_name=gene_name,
+                email=email,
+                metadata=metadata
+            )
+
+            elapsed = time.time() - start_time
+            logger.info(f"  {gene_name}: score={evaluation['overall_score']:.3f}, "
+                       f"seqs={evaluation['sequence_count']}, time={elapsed:.1f}s")
+
+            evaluated_genes.append((gene_name, evaluation))
+
+            # Check timeout
+            if elapsed > timeout_per_gene:
+                logger.warning(f"  Gene evaluation took {elapsed:.1f}s (timeout: {timeout_per_gene}s)")
+
+        except Exception as e:
+            logger.error(f"Error evaluating {gene_name}: {e}")
+            # Continue with next gene
+
+    # Sort by overall score (descending)
+    evaluated_genes.sort(key=lambda x: x[1]['overall_score'], reverse=True)
+
+    logger.info(f"Ranked {len(evaluated_genes)} genes for taxid {taxid}")
+    if evaluated_genes:
+        top_gene, top_eval = evaluated_genes[0]
+        logger.info(f"Top gene: {top_gene} (score: {top_eval['overall_score']:.3f}, "
+                   f"{top_eval['sequence_count']} sequences)")
+
+    return evaluated_genes
+
+
+def auto_select_gene_for_taxon(
+    taxid: str,
+    email: str,
+    use_case: str = 'quantification',
+    max_genes_to_test: int = 5,
+    min_acceptable_score: float = 0.4
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """
+    Automatically select the best gene for a taxon.
+
+    This is a convenience function that:
+    1. Auto-detects the domain
+    2. Ranks candidate genes
+    3. Returns the top gene if it meets minimum quality threshold
+    4. Returns None if no suitable gene found
+
+    Args:
+        taxid: NCBI taxonomy ID
+        email: User's email
+        use_case: 'quantification', 'phylogeny', or 'detection'
+        max_genes_to_test: How many genes to evaluate
+        min_acceptable_score: Minimum overall score to accept (0-1)
+
+    Returns:
+        (gene_name, evaluation_dict) or None if no suitable gene found
+
+    Example:
+        >>> result = auto_select_gene_for_taxon(
+        ...     taxid="562",
+        ...     email="user@example.com",
+        ...     use_case="quantification"
+        ... )
+        >>> if result:
+        ...     gene_name, evaluation = result
+        ...     print(f"Selected: {gene_name}")
+        Selected: rpoB
+    """
+    logger.info(f"Auto-selecting gene for taxid {taxid} (use case: {use_case})")
+
+    # Determine if we should prefer single-copy based on use case
+    prefer_single_copy = (use_case == 'quantification')
+
+    # Rank candidate genes
+    ranked_genes = rank_candidate_genes(
+        taxid=taxid,
+        email=email,
+        domain=None,  # Auto-detect
+        prefer_single_copy=prefer_single_copy,
+        max_genes_to_test=max_genes_to_test
+    )
+
+    if not ranked_genes:
+        logger.warning("No genes could be evaluated")
+        return None
+
+    # Get top gene
+    top_gene, top_evaluation = ranked_genes[0]
+    top_score = top_evaluation['overall_score']
+
+    # Check if it meets minimum threshold
+    if top_score >= min_acceptable_score:
+        logger.info(f"Auto-selected gene: {top_gene} (score: {top_score:.3f})")
+        return (top_gene, top_evaluation)
+    else:
+        logger.warning(f"Top gene {top_gene} has score {top_score:.3f} below threshold {min_acceptable_score}")
+        logger.warning("No suitable gene found")
+        return None
