@@ -377,6 +377,293 @@ def get_related_taxa(
         logger.error(f"Error finding related taxa for {taxid}: {str(e)}")
         return []
 
+def get_related_taxa_weighted(
+    taxid: str,
+    email: str,
+    max_results: int = 10,
+    diversity_levels: Optional[List[str]] = None,
+    min_sequence_count: int = 5
+) -> List[Dict[str, Any]]:
+    """
+    Get phylogenetically weighted exclusion taxa with sequence availability.
+
+    This enhanced version prioritizes taxa by:
+    1. Phylogenetic proximity (closer relatives ranked higher)
+    2. Sequence availability (taxa with more sequences preferred)
+    3. Taxonomic diversity (spans multiple levels: genus, family, order)
+
+    Args:
+        taxid (str): NCBI TaxID for inclusion taxon
+        email (str): User's email address
+        max_results (int): Maximum number of related taxa to return
+        diversity_levels (Optional[List[str]]): Taxonomic ranks to sample
+            Default: ["genus", "family", "order"]
+        min_sequence_count (int): Minimum sequences required (default: 5)
+
+    Returns:
+        List[Dict[str, Any]]: List of weighted taxa info with fields:
+            - taxid: str
+            - scientific_name: str
+            - rank: str
+            - phylogenetic_distance: int (lower = closer, in taxonomic steps)
+            - sequence_count: int (estimated)
+            - priority_score: float (higher = better candidate)
+            - lineage: str
+    """
+    if not email:
+        raise ValueError("Email address is required.")
+
+    if diversity_levels is None:
+        diversity_levels = ["genus", "family", "order"]
+
+    Entrez.email = email
+
+    try:
+        # Get the taxonomy information for our target
+        logger.info(f"Fetching weighted related taxa for taxid {taxid}")
+        tax_info = get_taxon_info(taxid, email)
+
+        if not tax_info:
+            logger.error(f"Could not get taxonomy info for taxid {taxid}")
+            return []
+
+        inclusion_rank = tax_info.get("rank", "")
+        lineage = tax_info.get("lineage_ex", [])
+
+        logger.info(f"Inclusion taxon: {tax_info.get('scientific_name', 'Unknown')} (rank: {inclusion_rank})")
+
+        # Collect candidate taxa from multiple taxonomic levels
+        all_candidates = []
+
+        for level in diversity_levels:
+            logger.info(f"Searching for {level}-level relatives")
+
+            # Get siblings at this taxonomic level
+            level_siblings = get_related_taxa(
+                taxid=taxid,
+                email=email,
+                relationship="sibling",
+                rank=level,
+                max_results=50  # Get more initially, will filter later
+            )
+
+            if not level_siblings:
+                logger.info(f"No {level}-level siblings found")
+                continue
+
+            # Calculate phylogenetic distance for each candidate
+            for sibling in level_siblings:
+                sibling_taxid = sibling.get("taxid")
+                sibling_name = sibling.get("scientific_name", "Unknown")
+                sibling_rank = sibling.get("rank", "")
+
+                # Calculate phylogenetic distance (number of taxonomic steps from inclusion)
+                # Distance is determined by the level at which we found the sibling
+                distance = _calculate_taxonomic_distance(level, inclusion_rank)
+
+                # Estimate sequence availability
+                try:
+                    sequence_count = _estimate_sequence_count(sibling_taxid, email)
+                except Exception as e:
+                    logger.warning(f"Could not estimate sequence count for {sibling_name}: {e}")
+                    sequence_count = 0
+
+                # Skip taxa with insufficient sequences
+                if sequence_count < min_sequence_count:
+                    logger.debug(f"Skipping {sibling_name} (only {sequence_count} sequences)")
+                    continue
+
+                # Calculate priority score
+                # Formula: priority = (1/distance) * log(seq_count + 1) * rank_weight
+                import math
+                rank_weights = {"genus": 1.0, "family": 0.8, "order": 0.6, "class": 0.4}
+                rank_weight = rank_weights.get(level, 0.5)
+
+                # Avoid division by zero
+                distance_score = 1.0 / max(distance, 1.0)
+                availability_score = math.log(sequence_count + 1)
+                priority_score = distance_score * availability_score * rank_weight
+
+                # Add to candidates
+                all_candidates.append({
+                    "taxid": sibling_taxid,
+                    "scientific_name": sibling_name,
+                    "rank": sibling_rank,
+                    "phylogenetic_distance": distance,
+                    "sequence_count": sequence_count,
+                    "priority_score": priority_score,
+                    "lineage": sibling.get("lineage", ""),
+                    "diversity_level": level
+                })
+
+                logger.debug(f"  {sibling_name}: distance={distance}, seqs={sequence_count}, score={priority_score:.2f}")
+
+        # Sort by priority score (descending)
+        all_candidates.sort(key=lambda x: x["priority_score"], reverse=True)
+
+        # Select top candidates, ensuring diversity across levels
+        selected_taxa = _select_diverse_taxa(all_candidates, max_results, diversity_levels)
+
+        logger.info(f"Selected {len(selected_taxa)} weighted exclusion taxa")
+        for taxon in selected_taxa:
+            logger.info(f"  {taxon['scientific_name']} ({taxon['diversity_level']}): "
+                       f"score={taxon['priority_score']:.2f}, seqs={taxon['sequence_count']}")
+
+        return selected_taxa
+
+    except Exception as e:
+        logger.error(f"Error finding weighted related taxa for {taxid}: {str(e)}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        return []
+
+def _calculate_taxonomic_distance(level: str, inclusion_rank: str) -> int:
+    """
+    Calculate phylogenetic distance in taxonomic steps.
+
+    Lower numbers indicate closer relationships.
+
+    Args:
+        level: Taxonomic level where sibling was found (genus, family, order)
+        inclusion_rank: Rank of the inclusion taxon
+
+    Returns:
+        int: Distance in taxonomic steps
+    """
+    # Standard taxonomic hierarchy
+    rank_hierarchy = {
+        "subspecies": 1,
+        "species": 2,
+        "genus": 3,
+        "family": 4,
+        "order": 5,
+        "class": 6,
+        "phylum": 7,
+        "kingdom": 8,
+        "superkingdom": 9
+    }
+
+    # Get numeric ranks
+    level_num = rank_hierarchy.get(level, 5)
+    inclusion_num = rank_hierarchy.get(inclusion_rank, 2)
+
+    # Distance is the absolute difference in rank levels
+    distance = abs(level_num - inclusion_num)
+
+    # If siblings are at the same level, distance is 1
+    if distance == 0:
+        distance = 1
+
+    return distance
+
+def _estimate_sequence_count(taxid: str, email: str, timeout: int = 5) -> int:
+    """
+    Estimate the number of sequences available for a taxon.
+
+    Uses a quick NCBI ESearch query to count available sequences.
+
+    Args:
+        taxid: NCBI taxonomy ID
+        email: User's email
+        timeout: Maximum time to wait (seconds)
+
+    Returns:
+        int: Estimated sequence count
+    """
+    Entrez.email = email
+
+    try:
+        # Quick search to count sequences
+        query = f"txid{taxid}[Organism] AND biomol_genomic[PROP] NOT wgs[Filter]"
+
+        search_handle = Entrez.esearch(db="nucleotide", term=query, retmax=0)
+        search_results = Entrez.read(search_handle)
+        search_handle.close()
+
+        count = int(search_results.get("Count", 0))
+        return count
+
+    except Exception as e:
+        logger.debug(f"Error estimating sequence count for taxid {taxid}: {e}")
+        return 0
+
+def _select_diverse_taxa(
+    candidates: List[Dict[str, Any]],
+    max_results: int,
+    diversity_levels: List[str]
+) -> List[Dict[str, Any]]:
+    """
+    Select taxa ensuring diversity across taxonomic levels.
+
+    Algorithm:
+    - Allocate slots proportionally across diversity levels
+    - Within each level, select highest-scoring taxa
+    - If a level has fewer candidates than slots, redistribute
+
+    Args:
+        candidates: All candidate taxa (sorted by priority score)
+        max_results: Maximum number to select
+        diversity_levels: Taxonomic levels to sample
+
+    Returns:
+        List of selected taxa
+    """
+    if not candidates:
+        return []
+
+    # Group candidates by diversity level
+    by_level = {level: [] for level in diversity_levels}
+    for candidate in candidates:
+        level = candidate.get("diversity_level")
+        if level in by_level:
+            by_level[level].append(candidate)
+
+    # Calculate allocation per level
+    # Prioritize closer relatives (genus > family > order)
+    level_weights = {"genus": 0.5, "family": 0.3, "order": 0.2}
+
+    # Adjust weights based on availability
+    total_weight = 0
+    available_weights = {}
+    for level in diversity_levels:
+        if by_level[level]:  # Only include levels with candidates
+            weight = level_weights.get(level, 0.1)
+            available_weights[level] = weight
+            total_weight += weight
+
+    # Normalize weights
+    if total_weight > 0:
+        for level in available_weights:
+            available_weights[level] /= total_weight
+
+    # Allocate slots
+    selected = []
+    remaining_slots = max_results
+
+    for level in diversity_levels:
+        if not by_level[level] or remaining_slots <= 0:
+            continue
+
+        # Calculate number of slots for this level
+        target_slots = int(available_weights.get(level, 0) * max_results)
+        actual_slots = min(target_slots, len(by_level[level]), remaining_slots)
+
+        # Select top-scoring taxa from this level
+        selected.extend(by_level[level][:actual_slots])
+        remaining_slots -= actual_slots
+
+    # If we still have remaining slots, add highest-scoring candidates regardless of level
+    if remaining_slots > 0:
+        already_selected_ids = {t["taxid"] for t in selected}
+        for candidate in candidates:
+            if candidate["taxid"] not in already_selected_ids:
+                selected.append(candidate)
+                remaining_slots -= 1
+                if remaining_slots <= 0:
+                    break
+
+    return selected[:max_results]
+
 def suggest_marker_genes(taxid: str, email: str) -> List[Dict[str, str]]:
     """
     Suggest appropriate marker genes for a given taxon.
