@@ -664,6 +664,289 @@ def _select_diverse_taxa(
 
     return selected[:max_results]
 
+def intelligent_exclusion_selection(
+    inclusion_taxid: str,
+    email: str,
+    max_exclusion_taxa: int = 10,
+    require_sequences: bool = True,
+    min_sequence_count: int = 5,
+    tier_allocation: Optional[Dict[str, float]] = None
+) -> Dict[str, Any]:
+    """
+    Intelligently select exclusion taxa using tiered phylogenetic strategy.
+
+    This function automatically builds a representative exclusion set by:
+    1. Determining the inclusion taxon's rank
+    2. Sampling taxa from multiple taxonomic levels (genus, family, order)
+    3. Allocating slots proportionally by tier (default: 50% genus, 30% family, 20% order)
+    4. Prioritizing by phylogenetic proximity and sequence availability
+
+    Args:
+        inclusion_taxid (str): NCBI TaxID for inclusion taxon
+        email (str): User's email for NCBI queries
+        max_exclusion_taxa (int): Maximum number of exclusion taxa (default: 10)
+        require_sequences (bool): Only include taxa with sufficient sequences (default: True)
+        min_sequence_count (int): Minimum sequences required per taxon (default: 5)
+        tier_allocation (Optional[Dict[str, float]]): Custom tier weights
+            Default: {"genus": 0.5, "family": 0.3, "order": 0.2}
+
+    Returns:
+        Dict[str, Any]: Exclusion selection results with fields:
+            - exclusion_taxids: List[str] - Selected taxon IDs
+            - taxa_info: List[Dict] - Full metadata for each taxon
+            - selection_strategy: str - Description of selection approach
+            - coverage_score: float - Phylogenetic breadth (0-1)
+            - inclusion_info: Dict - Info about inclusion taxon
+            - tier_summary: Dict - Count of taxa per tier
+
+    Example:
+        >>> result = intelligent_exclusion_selection(
+        ...     inclusion_taxid="689",  # Vibrio mediterranei
+        ...     email="user@example.com",
+        ...     max_exclusion_taxa=10
+        ... )
+        >>> print(f"Selected {len(result['exclusion_taxids'])} exclusion taxa")
+        >>> print(f"Coverage score: {result['coverage_score']:.2f}")
+    """
+    if not email:
+        raise ValueError("Email address is required.")
+
+    if tier_allocation is None:
+        tier_allocation = {"genus": 0.5, "family": 0.3, "order": 0.2}
+
+    Entrez.email = email
+
+    try:
+        # Get information about the inclusion taxon
+        logger.info(f"Starting intelligent exclusion selection for taxid {inclusion_taxid}")
+        inclusion_info = get_taxon_info(inclusion_taxid, email)
+
+        if not inclusion_info:
+            return {
+                "error": f"Could not retrieve information for taxid {inclusion_taxid}",
+                "exclusion_taxids": [],
+                "taxa_info": []
+            }
+
+        inclusion_rank = inclusion_info.get("rank", "")
+        inclusion_name = inclusion_info.get("scientific_name", "Unknown")
+
+        logger.info(f"Inclusion taxon: {inclusion_name} (rank: {inclusion_rank})")
+
+        # Determine appropriate diversity levels based on inclusion rank
+        diversity_levels = _determine_diversity_levels(inclusion_rank)
+        logger.info(f"Using diversity levels: {diversity_levels}")
+
+        # Calculate target number of taxa per tier
+        tier_targets = {}
+        total_weight = sum(tier_allocation.get(level, 0) for level in diversity_levels)
+
+        for level in diversity_levels:
+            weight = tier_allocation.get(level, 0)
+            if total_weight > 0:
+                tier_targets[level] = max(1, int((weight / total_weight) * max_exclusion_taxa))
+            else:
+                tier_targets[level] = max(1, max_exclusion_taxa // len(diversity_levels))
+
+        logger.info(f"Target allocation: {tier_targets}")
+
+        # Get weighted related taxa spanning all diversity levels
+        all_weighted_taxa = get_related_taxa_weighted(
+            taxid=inclusion_taxid,
+            email=email,
+            max_results=max_exclusion_taxa * 3,  # Get more candidates than needed
+            diversity_levels=diversity_levels,
+            min_sequence_count=min_sequence_count if require_sequences else 0
+        )
+
+        if not all_weighted_taxa:
+            logger.warning("No suitable exclusion taxa found with current criteria")
+
+            # Try again with relaxed requirements
+            if require_sequences and min_sequence_count > 1:
+                logger.info("Retrying with relaxed sequence requirements...")
+                all_weighted_taxa = get_related_taxa_weighted(
+                    taxid=inclusion_taxid,
+                    email=email,
+                    max_results=max_exclusion_taxa * 2,
+                    diversity_levels=diversity_levels,
+                    min_sequence_count=1  # Very relaxed
+                )
+
+        if not all_weighted_taxa:
+            # Last resort: try with even broader levels
+            logger.warning("Still no taxa found, trying broader taxonomic levels...")
+            broader_levels = diversity_levels + ["class", "phylum"]
+            all_weighted_taxa = get_related_taxa_weighted(
+                taxid=inclusion_taxid,
+                email=email,
+                max_results=max_exclusion_taxa,
+                diversity_levels=broader_levels,
+                min_sequence_count=0  # No minimum
+            )
+
+        if not all_weighted_taxa:
+            return {
+                "error": "Could not find any suitable exclusion taxa",
+                "exclusion_taxids": [],
+                "taxa_info": [],
+                "inclusion_info": inclusion_info,
+                "selection_strategy": "Failed - no suitable relatives found"
+            }
+
+        # Select top taxa (already sorted by priority score in get_related_taxa_weighted)
+        selected_taxa = all_weighted_taxa[:max_exclusion_taxa]
+
+        # Extract taxids
+        exclusion_taxids = [taxon["taxid"] for taxon in selected_taxa]
+
+        # Calculate coverage score based on phylogenetic diversity
+        coverage_score = _calculate_coverage_score(selected_taxa, diversity_levels)
+
+        # Summarize tier distribution
+        tier_summary = {}
+        for level in diversity_levels:
+            count = sum(1 for t in selected_taxa if t.get("diversity_level") == level)
+            tier_summary[level] = count
+
+        # Build selection strategy description
+        strategy_parts = []
+        for level, count in tier_summary.items():
+            if count > 0:
+                strategy_parts.append(f"{count} {level}-level")
+
+        selection_strategy = f"Tiered selection: {', '.join(strategy_parts)} relatives"
+
+        logger.info(f"Selected {len(selected_taxa)} exclusion taxa")
+        logger.info(f"Tier distribution: {tier_summary}")
+        logger.info(f"Coverage score: {coverage_score:.2f}")
+
+        return {
+            "exclusion_taxids": exclusion_taxids,
+            "taxa_info": selected_taxa,
+            "selection_strategy": selection_strategy,
+            "coverage_score": coverage_score,
+            "inclusion_info": inclusion_info,
+            "tier_summary": tier_summary,
+            "diversity_levels": diversity_levels
+        }
+
+    except Exception as e:
+        logger.error(f"Error in intelligent exclusion selection: {str(e)}")
+        import traceback
+        logger.debug(traceback.format_exc())
+
+        return {
+            "error": str(e),
+            "exclusion_taxids": [],
+            "taxa_info": []
+        }
+
+def _determine_diversity_levels(inclusion_rank: str) -> List[str]:
+    """
+    Determine appropriate diversity levels based on inclusion taxon rank.
+
+    Args:
+        inclusion_rank: Rank of the inclusion taxon
+
+    Returns:
+        List of taxonomic ranks to sample for exclusion
+
+    Examples:
+        - If inclusion is species → sample genus, family, order
+        - If inclusion is genus → sample family, order, class
+        - If inclusion is family → sample order, class, phylum
+    """
+    rank_hierarchy = [
+        "subspecies",
+        "species",
+        "genus",
+        "family",
+        "order",
+        "class",
+        "phylum",
+        "kingdom"
+    ]
+
+    # Find the index of the inclusion rank
+    try:
+        inclusion_idx = rank_hierarchy.index(inclusion_rank)
+    except ValueError:
+        # Default to species level if rank not recognized
+        logger.warning(f"Unknown rank '{inclusion_rank}', defaulting to species-level sampling")
+        inclusion_idx = 1
+
+    # Select 3 levels above the inclusion rank
+    diversity_levels = []
+    for offset in [1, 2, 3]:
+        target_idx = inclusion_idx + offset
+        if target_idx < len(rank_hierarchy):
+            diversity_levels.append(rank_hierarchy[target_idx])
+
+    # Ensure we have at least some levels
+    if not diversity_levels:
+        diversity_levels = ["genus", "family", "order"]
+
+    # Limit to commonly used levels
+    valid_levels = ["genus", "family", "order", "class", "phylum"]
+    diversity_levels = [level for level in diversity_levels if level in valid_levels]
+
+    if not diversity_levels:
+        diversity_levels = ["genus", "family", "order"]
+
+    return diversity_levels
+
+def _calculate_coverage_score(selected_taxa: List[Dict[str, Any]], diversity_levels: List[str]) -> float:
+    """
+    Calculate phylogenetic coverage score based on diversity.
+
+    Score factors:
+    1. Number of taxonomic levels represented (more = better)
+    2. Number of taxa (more = better, up to diminishing returns)
+    3. Spread of phylogenetic distances (wider = better)
+
+    Args:
+        selected_taxa: List of selected exclusion taxa with metadata
+        diversity_levels: Target diversity levels
+
+    Returns:
+        float: Coverage score between 0 and 1
+            - 1.0 = Excellent coverage across all levels
+            - 0.7-0.9 = Good coverage
+            - 0.5-0.7 = Fair coverage
+            - <0.5 = Limited coverage
+    """
+    if not selected_taxa:
+        return 0.0
+
+    # Factor 1: Level diversity (0-0.4 points)
+    levels_represented = set(t.get("diversity_level") for t in selected_taxa)
+    level_score = len(levels_represented) / max(len(diversity_levels), 1)
+    level_score = min(level_score, 1.0) * 0.4
+
+    # Factor 2: Number of taxa (0-0.3 points, with diminishing returns)
+    import math
+    taxa_count = len(selected_taxa)
+    # Use logarithmic scale to give diminishing returns after ~10 taxa
+    taxa_score = min(math.log(taxa_count + 1) / math.log(15), 1.0) * 0.3
+
+    # Factor 3: Distance spread (0-0.3 points)
+    distances = [t.get("phylogenetic_distance", 1) for t in selected_taxa]
+    if distances:
+        min_dist = min(distances)
+        max_dist = max(distances)
+        distance_range = max_dist - min_dist
+
+        # Ideal range is having both close (distance=1) and far (distance>=3) relatives
+        ideal_range = 3
+        distance_score = min(distance_range / ideal_range, 1.0) * 0.3
+    else:
+        distance_score = 0.0
+
+    total_score = level_score + taxa_score + distance_score
+
+    return round(total_score, 2)
+
 def suggest_marker_genes(taxid: str, email: str) -> List[Dict[str, str]]:
     """
     Suggest appropriate marker genes for a given taxon.
