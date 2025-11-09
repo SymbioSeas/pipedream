@@ -21,19 +21,19 @@ This document provides comprehensive, real-world examples of using the assay_des
 Design a species-specific assay for *Vibrio mediterranei* with everything automated:
 
 ```bash
-assay-design --inclusion 689 --email your.email@example.com --auto-gene --auto-exclusion
+assay-design --inclusion 689 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --output-dir ./vibrio_assay
 ```
 
 **What this does:**
 - Automatically selects the best gene marker (likely rpoB or gyrB)
-- Automatically identifies sibling Vibrio species for exclusion
-- Uses phylogenetic distance weighting to prioritize closest relatives
+- Automatically identifies multiple exclusion taxa across taxonomic levels
+- Uses phylogenetic distance weighting to prioritize relevant relatives
 - Designs primers specific to V. mediterranei
 
 **Expected output:**
 ```
-Selected gene: rpoB (score: 8.75/10)
-Exclusion taxa: 5 sibling species in genus Vibrio
+Auto-selected gene: rpoB (score: 0.87)
+Intelligent exclusion selected 8 taxa across multiple levels
 Primers designed: Forward: ATCG..., Reverse: GCTA...
 ```
 
@@ -42,7 +42,7 @@ Primers designed: Forward: ATCG..., Reverse: GCTA...
 Check which genes are available for your target organism:
 
 ```bash
-assay-design --inclusion 562 --email your.email@example.com --suggest-genes
+assay-design --inclusion 562 --email your.email@example.com --suggest-genes --output-dir ./ecoli_genes
 ```
 
 **What this does:**
@@ -67,42 +67,44 @@ Rank  Gene        Score  Sequences  Copy  HGT-Res  Avg Length
 
 ## Automated Gene Selection Examples
 
-### Example 3: Auto-Select Gene with Custom Criteria
+### Example 3: Auto-Select Gene for Phylogenetic Studies
 
-Automatically select a gene, but use custom criteria requiring at least 30 sequences:
+Automatically select a gene optimized for phylogenetic analysis:
 
 ```bash
 assay-design --inclusion 689 --email your.email@example.com --auto-gene \
-  --gene-criteria '{"min_sequence_count": 30, "ideal_length_range": [1000, 2000]}' \
-  --auto-exclusion
+  --gene-use-case phylogeny \
+  --exclusion-strategy intelligent \
+  --output-dir ./vibrio_phylo
 ```
 
 **When to use this:**
-- You need high sequence availability for robust alignment
-- You want longer amplicons (1000-2000 bp)
-- You're designing assays for well-characterized organisms
+- You're designing assays for phylogenetic/taxonomic classification
+- You want evolutionarily informative markers
+- You need good sequence conservation with discriminatory power
 
-### Example 4: Auto-Select Single-Copy Genes Only
+### Example 4: Auto-Select for Quantification (qPCR)
 
-Force selection of only single-copy genes (exclude rRNA genes):
+Select optimal gene for quantitative PCR applications:
 
 ```bash
 assay-design --inclusion 562 --email your.email@example.com --auto-gene \
-  --gene-criteria '{"single_copy_preferred": true, "min_sequence_count": 20}' \
-  --auto-exclusion
+  --gene-use-case quantification \
+  --exclusion-strategy intelligent \
+  --output-dir ./ecoli_qpcr
 ```
 
 **When to use this:**
 - Quantitative PCR applications where copy number matters
-- Avoiding amplification bias from multi-copy genes
-- Phylogenetic studies requiring single-copy markers
+- Need single-copy, HGT-resistant genes for accurate quantification
+- Designing assays for gene copy number determination
 
 ### Example 5: Manual Gene Selection
 
 If you already know which gene to use:
 
 ```bash
-assay-design --inclusion 689 --gene "rpoB" --email your.email@example.com --auto-exclusion
+assay-design --inclusion 689 --gene "rpoB" --email your.email@example.com --exclusion-strategy intelligent --output-dir ./vibrio_rpoB
 ```
 
 **When to use this:**
@@ -121,8 +123,8 @@ Design a species-specific assay that excludes other species in the same genus:
 ```bash
 assay-design --inclusion 689 --email your.email@example.com \
   --auto-gene \
-  --exclusion-strategy genus \
-  --exclusion-phylo-distance 0.8
+  --exclusion-strategy siblings \
+  --output-dir ./vibrio_species_specific
 ```
 
 **Use case:** Detecting *Vibrio mediterranei* but NOT other Vibrio species
@@ -176,44 +178,50 @@ assay-design --inclusion 689 \
 
 ## Custom Criteria Examples
 
-### Example 10: High Sequence Availability Required
+### Example 10: Quantification Use Case
 
-For well-studied organisms with abundant sequence data:
+For well-studied organisms where accurate quantification is needed:
 
 ```bash
 assay-design --inclusion 562 --email your.email@example.com --auto-gene \
-  --gene-criteria '{"min_sequence_count": 50, "ideal_length_range": [800, 1500]}' \
-  --auto-exclusion
+  --gene-use-case quantification \
+  --exclusion-strategy intelligent \
+  --output-dir ./ecoli_quant
 ```
 
 **Typical organisms:** E. coli, Salmonella, Staphylococcus aureus
+**What this optimizes for:** Single-copy genes, HGT resistance, robust sequence availability
 
-### Example 11: Relaxed Criteria for Rare Organisms
+### Example 11: Detection Use Case
 
-For poorly characterized organisms with limited sequence data:
-
-```bash
-assay-design --inclusion 12345 --email your.email@example.com --auto-gene \
-  --gene-criteria '{"min_sequence_count": 5, "ideal_length_range": [500, 3000]}' \
-  --auto-exclusion
-```
-
-**When to use this:**
-- Novel or rare organisms
-- Environmental isolates with limited genomic data
-- Preliminary assay design before more data becomes available
-
-### Example 12: Long Amplicons for Sequencing
-
-When you need longer amplicons for Sanger sequencing or other applications:
+For organisms where detection specificity is the primary goal:
 
 ```bash
 assay-design --inclusion 689 --email your.email@example.com --auto-gene \
-  --gene-criteria '{"ideal_length_range": [1500, 2500], "min_sequence_count": 15}' \
-  --auto-exclusion
+  --gene-use-case detection \
+  --exclusion-strategy intelligent \
+  --max-exclusion-taxa 15 \
+  --output-dir ./vibrio_detect
 ```
 
-**Use case:** Sanger sequencing, MinION sequencing, or phylogenetic analysis
+**When to use this:**
+- Clinical diagnostics requiring high specificity
+- Food safety testing
+- Environmental monitoring for specific pathogens
+
+### Example 12: Control Gene Selection Fallback
+
+Adjust how many genes to try and minimum acceptable score:
+
+```bash
+assay-design --inclusion 689 --email your.email@example.com --auto-gene \
+  --max-genes-to-try 5 \
+  --min-gene-score 0.5 \
+  --exclusion-strategy intelligent \
+  --output-dir ./vibrio_flexible
+```
+
+**Use case:** Organisms with limited sequence data where you want more fallback options
 
 ---
 
@@ -223,10 +231,10 @@ assay-design --inclusion 689 --email your.email@example.com --auto-gene \
 
 ```bash
 # E. coli detection
-assay-design --inclusion 562 --email your.email@example.com --auto-gene --auto-exclusion
+assay-design --inclusion 562 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --output-dir ./results
 
 # Salmonella detection
-assay-design --inclusion 590 --email your.email@example.com --auto-gene --auto-exclusion
+assay-design --inclusion 590 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --output-dir ./results
 ```
 
 **Automatic gene database:** BACTERIA_GENES (30 genes including rpoB, gyrB, recA, 16S rRNA)
@@ -235,7 +243,7 @@ assay-design --inclusion 590 --email your.email@example.com --auto-gene --auto-e
 
 ```bash
 # Methanococcus maripaludis
-assay-design --inclusion 267377 --email your.email@example.com --auto-gene --auto-exclusion
+assay-design --inclusion 267377 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --output-dir ./results
 ```
 
 **Automatic gene database:** ARCHAEA_GENES (20 genes including rpoB, EF-2, 16S rRNA)
@@ -244,7 +252,7 @@ assay-design --inclusion 267377 --email your.email@example.com --auto-gene --aut
 
 ```bash
 # Saccharomyces cerevisiae
-assay-design --inclusion 4932 --email your.email@example.com --auto-gene --auto-exclusion
+assay-design --inclusion 4932 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --output-dir ./results
 ```
 
 **Automatic gene database:** EUKARYOTA_GENES (20 genes including 18S rRNA, COI, ITS)
@@ -253,7 +261,7 @@ assay-design --inclusion 4932 --email your.email@example.com --auto-gene --auto-
 
 ```bash
 # SARS-CoV-2
-assay-design --inclusion 2697049 --email your.email@example.com --auto-gene --auto-exclusion
+assay-design --inclusion 2697049 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --output-dir ./results
 ```
 
 **Automatic gene database:** VIRUS_GENES (15 genes including RdRp, capsid, polymerase)
@@ -418,18 +426,20 @@ Error: No sequences found for gene 'gyrB' in taxid 12345
 **Solutions:**
 1. Try auto-gene selection instead of manual:
    ```bash
-   assay-design --inclusion 12345 --email your.email@example.com --auto-gene --auto-exclusion
+   assay-design --inclusion 12345 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --output-dir ./results
    ```
 
 2. Use --suggest-genes to see what's available:
    ```bash
-   assay-design --inclusion 12345 --email your.email@example.com --suggest-genes
+   assay-design --inclusion 12345 --email your.email@example.com --suggest-genes --output-dir ./gene_suggestions
    ```
 
-3. Relax gene criteria:
+3. Adjust gene selection parameters:
    ```bash
    assay-design --inclusion 12345 --email your.email@example.com --auto-gene \
-     --gene-criteria '{"min_sequence_count": 3}'
+     --min-gene-score 0.3 \
+     --max-genes-to-try 5 \
+     --output-dir ./results
    ```
 
 ### Issue 2: Too Few Exclusion Taxa
@@ -443,13 +453,13 @@ Warning: Only 1 exclusion taxon found
 1. Use a broader exclusion strategy:
    ```bash
    assay-design --inclusion 689 --email your.email@example.com \
-     --auto-gene --exclusion-strategy family
+     --auto-gene --exclusion-strategy family --output-dir ./results
    ```
 
-2. Reduce phylo-distance weighting to include more distant taxa:
+2. Increase maximum exclusion taxa count:
    ```bash
    assay-design --inclusion 689 --email your.email@example.com \
-     --auto-gene --auto-exclusion --exclusion-phylo-distance 0.3
+     --auto-gene --exclusion-strategy intelligent --max-exclusion-taxa 20 --output-dir ./results
    ```
 
 ### Issue 3: Gene Selection Scores Are Low
@@ -464,12 +474,12 @@ Warning: Best gene score is only 5.2/10
 **Solutions:**
 1. Proceed with the best available gene:
    ```bash
-   assay-design --inclusion 12345 --email your.email@example.com --auto-gene --auto-exclusion
+   assay-design --inclusion 12345 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --output-dir ./results
    ```
 
 2. Use 16S rRNA as a fallback (usually has more sequences):
    ```bash
-   assay-design --inclusion 12345 --gene "16S ribosomal RNA" --email your.email@example.com
+   assay-design --inclusion 12345 --gene "16S ribosomal RNA" --email your.email@example.com --output-dir ./results
    ```
 
 ### Issue 4: Primers Not Specific Enough
@@ -480,19 +490,19 @@ Warning: Best gene score is only 5.2/10
 1. Add more exclusion taxa:
    ```bash
    assay-design --inclusion 689 --email your.email@example.com \
-     --auto-gene --exclusion-strategy family  # Broader exclusion
+     --auto-gene --exclusion-strategy family --output-dir ./results  # Broader exclusion
    ```
 
 2. Try a different gene:
    ```bash
-   assay-design --inclusion 689 --email your.email@example.com --suggest-genes
+   assay-design --inclusion 689 --email your.email@example.com --suggest-genes --output-dir ./gene_suggestions
    # Then select a different top-ranked gene
    ```
 
 3. Manually add problematic taxa to exclusion:
    ```bash
    assay-design --inclusion 689 --exclusion 717,670,672,999 --gene "rpoB" \
-     --email your.email@example.com
+     --email your.email@example.com --output-dir ./results
    ```
 
 ---
@@ -502,26 +512,27 @@ Warning: Best gene score is only 5.2/10
 ### 1. Start with Full Automation
 Begin with the fully automated workflow:
 ```bash
-assay-design --inclusion <TAXID> --email <EMAIL> --auto-gene --auto-exclusion
+assay-design --inclusion <TAXID> --email <EMAIL> --auto-gene --exclusion-strategy intelligent --output-dir ./results
 ```
 
 ### 2. Check Gene Suggestions
 If results aren't satisfactory, review available genes:
 ```bash
-assay-design --inclusion <TAXID> --email <EMAIL> --suggest-genes
+assay-design --inclusion <TAXID> --email <EMAIL> --suggest-genes --output-dir ./gene_check
 ```
 
 ### 3. Adjust Exclusion Strategy
 Fine-tune specificity by adjusting the exclusion strategy:
-- Species-specific → `--exclusion-strategy genus`
+- Species-specific → `--exclusion-strategy siblings`
 - Genus-specific → `--exclusion-strategy family`
 - Family-specific → `--exclusion-strategy order`
+- Multi-level (recommended) → `--exclusion-strategy intelligent --max-exclusion-taxa 10`
 
 ### 4. Customize for Your Organism
-- Well-characterized organisms: Increase `min_sequence_count` (30-50)
-- Rare organisms: Decrease `min_sequence_count` (5-10)
-- Phylogenetic studies: Use `single_copy_preferred=true`
-- Multi-copy acceptable: Allow rRNA genes for better sequence availability
+- Well-characterized organisms: Use `--gene-use-case quantification` or `--gene-use-case detection`
+- Phylogenetic studies: Use `--gene-use-case phylogeny`
+- Flexible gene selection: Adjust `--max-genes-to-try` and `--min-gene-score`
+- Control exclusion scope: Adjust `--max-exclusion-taxa` (default: 10)
 
 ### 5. Validate Results
 Always validate your primers using the built-in specificity validation or external tools like Primer-BLAST.

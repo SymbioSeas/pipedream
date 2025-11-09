@@ -40,67 +40,77 @@ Design an assay for a specific organism (using taxid 689 for Vibrio mediterranei
 
 ```bash
 # Fully automated: auto-select gene AND exclusion taxa
-assay-design --inclusion 689 --email your.email@example.com --auto-gene --auto-exclusion
-
-# Automated with phylogenetic distance weighting (prioritizes phylogenetically closer taxa)
-assay-design --inclusion 689 --email your.email@example.com --auto-gene --auto-exclusion --exclusion-phylo-distance 0.8
+assay-design --inclusion 689 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --output-dir ./results
 
 # Use family-level exclusion strategy (broader exclusion scope)
-assay-design --inclusion 689 --email your.email@example.com --auto-gene --exclusion-strategy family
+assay-design --inclusion 689 --email your.email@example.com --auto-gene --exclusion-strategy family --output-dir ./results
+
+# Genus-level (sibling species) exclusion
+assay-design --inclusion 689 --email your.email@example.com --auto-gene --exclusion-strategy siblings --output-dir ./results
 ```
 
 #### Automated Gene Selection
 
 ```bash
 # Let the system choose the best gene automatically
-assay-design --inclusion 689 --email your.email@example.com --auto-gene --auto-exclusion
+assay-design --inclusion 689 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --output-dir ./results
 
-# Customize gene selection criteria (JSON format)
-assay-design --inclusion 689 --email your.email@example.com --auto-gene \
-  --gene-criteria '{"min_sequence_count": 20, "ideal_length_range": [800, 2000], "single_copy_preferred": true}'
+# Customize gene selection for specific use cases
+assay-design --inclusion 689 --email your.email@example.com --auto-gene --gene-use-case quantification --output-dir ./results
 
 # View available genes and their suitability scores
-assay-design --inclusion 689 --email your.email@example.com --suggest-genes
+assay-design --inclusion 689 --email your.email@example.com --suggest-genes --output-dir ./results
 ```
 
 #### Exclusion Strategy Options
 
 ```bash
-# Genus-level exclusion (default) - excludes sibling species in the same genus
-assay-design --inclusion 689 --email your.email@example.com --exclusion-strategy genus
+# Intelligent multi-level exclusion (recommended) - phylogenetic-aware selection
+assay-design --inclusion 689 --email your.email@example.com --exclusion-strategy intelligent --max-exclusion-taxa 10 --output-dir ./results
+
+# Genus-level exclusion (siblings) - excludes sibling species in the same genus
+assay-design --inclusion 689 --email your.email@example.com --exclusion-strategy siblings --output-dir ./results
 
 # Family-level exclusion - excludes related genera in the same family
-assay-design --inclusion 689 --email your.email@example.com --exclusion-strategy family
+assay-design --inclusion 689 --email your.email@example.com --exclusion-strategy family --output-dir ./results
 
 # Order-level exclusion - excludes related families in the same order
-assay-design --inclusion 689 --email your.email@example.com --exclusion-strategy order
+assay-design --inclusion 689 --email your.email@example.com --exclusion-strategy order --output-dir ./results
 
-# Custom exclusion - manually specify taxa to exclude
-assay-design --inclusion 689 --exclusion 717,670,672 --email your.email@example.com
+# Manual exclusion - manually specify taxa to exclude
+assay-design --inclusion 689 --exclusion 717,670,672 --email your.email@example.com --output-dir ./results
 ```
 
 #### Manual Gene Selection
 
 ```bash
 # Specify a particular gene
-assay-design --inclusion 689 --gene "rpoB" --email your.email@example.com --auto-exclusion
+assay-design --inclusion 689 --gene "rpoB" --email your.email@example.com --exclusion-strategy intelligent --output-dir ./results
 
 # Specify gene with custom exclusion
-assay-design --inclusion 689 --gene "16S ribosomal RNA" --exclusion 717,670,672 --email your.email@example.com
+assay-design --inclusion 689 --gene "16S ribosomal RNA" --exclusion 717,670,672 --email your.email@example.com --output-dir ./results
 ```
 
 #### Advanced Options
 
 ```bash
 # Disable LSH optimization for traditional k-mer comparison
-assay-design --inclusion 689 --email your.email@example.com --auto-gene --auto-exclusion --no-lsh
+assay-design --inclusion 689 --email your.email@example.com --auto-gene --exclusion-strategy intelligent --no-lsh --output-dir ./results
 
 # Combine multiple options for fine-tuned control
 assay-design --inclusion 689 --email your.email@example.com \
   --auto-gene \
-  --gene-criteria '{"min_sequence_count": 15, "ideal_length_range": [1000, 1800]}' \
+  --gene-use-case phylogeny \
   --exclusion-strategy family \
-  --exclusion-phylo-distance 0.75
+  --max-exclusion-taxa 15 \
+  --output-dir ./results
+
+# Control gene selection fallback behavior
+assay-design --inclusion 689 --email your.email@example.com \
+  --auto-gene \
+  --max-genes-to-try 5 \
+  --min-gene-score 0.6 \
+  --output-dir ./results
 ```
 
 ### Python API
@@ -309,32 +319,31 @@ custom_criteria = GeneSelectionCriteria(
 
 ## Intelligent Exclusion Selection
 
-### Phylogenetic Distance Weighting
-
-The `get_related_taxa()` function now supports phylogenetic distance weighting, which prioritizes taxa that are phylogenetically closer to your target:
-
-- **Weight = 0.0**: No distance weighting (all taxa equally likely)
-- **Weight = 0.5**: Moderate preference for closer taxa
-- **Weight = 0.8**: Strong preference for closer taxa (recommended)
-- **Weight = 1.0**: Maximum preference for closest taxa
-
-This helps design more specific assays by focusing on the most relevant exclusion taxa.
-
 ### Exclusion Strategies
 
-Three hierarchical exclusion strategies are available:
+The package provides multiple exclusion strategies to match your assay design goals:
 
-1. **Genus-level** (default): Excludes sibling species within the same genus
+1. **Intelligent** (recommended): Multi-level phylogenetic-aware selection
+   - Automatically selects exclusion taxa across multiple taxonomic levels
+   - Balances close and distant relatives for robust specificity
+   - Uses `intelligent_exclusion_selection()` with phylogenetic distance weighting
+   - Control the number with `--max-exclusion-taxa` (default: 10)
+
+2. **Siblings** (genus-level): Excludes sibling species within the same genus
    - Best for species-specific assays
    - Example: Targeting *Vibrio mediterranei*, excludes other *Vibrio* species
 
-2. **Family-level**: Excludes related genera within the same family
+3. **Family-level**: Excludes related genera within the same family
    - Best for genus-specific assays
    - Example: Targeting *Vibrio* genus, excludes other Vibrionaceae genera
 
-3. **Order-level**: Excludes related families within the same order
+4. **Order-level**: Excludes related families within the same order
    - Best for family-specific assays
    - Example: Targeting Vibrionaceae, excludes other Vibrionales families
+
+5. **Manual**: Use only user-specified exclusion taxa
+   - Full control over which taxa to exclude
+   - Specify with `--exclusion taxid1,taxid2,taxid3`
 
 ## Performance Optimization
 
