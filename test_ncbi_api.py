@@ -34,7 +34,8 @@ def test_ncbi_connection(email, api_key=None):
     print("Test 1: Fetching taxonomy info for taxid 1854 (Frankia)")
     print("-"*60)
     try:
-        handle = Entrez.efetch(db="taxonomy", id="1854", retmode="xml")
+        # Note: taxonomy database doesn't require retmode parameter
+        handle = Entrez.efetch(db="taxonomy", id="1854")
         records = Entrez.read(handle)
         handle.close()
 
