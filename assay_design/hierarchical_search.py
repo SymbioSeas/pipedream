@@ -7,7 +7,8 @@ from Bio.SeqRecord import SeqRecord
 from .data_retrieval import (
     fetch_sequences_for_taxid,
     fetch_gene_sequences,
-    get_related_taxa
+    get_related_taxa,
+    get_taxon_info
 )
 from .target_identification import (
     find_discriminative_kmers,
@@ -15,6 +16,10 @@ from .target_identification import (
 )
 from .lsh_sequence_search import lsh_find_markers
 from .kmer_analysis import kmer_analysis
+from .gene_selection import (
+    auto_select_gene_for_taxon,
+    rank_candidate_genes
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,32 +39,113 @@ def hierarchical_marker_search(
     std_kmer: bool = True,
     parallel_processes: Optional[int] = 8,
     inclusion_sequences: Optional[List[SeqRecord]] = None,
-    exclusion_sequences: Optional[List[SeqRecord]] = None
+    exclusion_sequences: Optional[List[SeqRecord]] = None,
+    auto_gene_selection: bool = False,
+    gene_use_case: str = 'quantification',
+    max_genes_to_try: int = 3,
+    min_gene_score: float = 0.4
 ) -> Dict[str, Any]:
     """
     Perform a hierarchical search for marker regions.
-    
+
     Args:
         inclusion_taxid (str): NCBI taxonomy ID for target organism
         email (str): Email for NCBI queries
-        gene_name (Optional[str]): Specific gene to target
+        gene_name (Optional[str]): Specific gene to target (if None and auto_gene_selection=True, will auto-select)
         exclusion_taxids (Optional[List[str]]): List of explicit exclusion taxids
         max_seq_count (int): Maximum sequences to process per taxid
         max_seq_length (int): Maximum sequence length to consider
         min_conservation (float): Minimum conservation within inclusion sequences
         min_specificity (float): Minimum specificity compared to exclusion sequences
         timeout_seconds (int): Maximum runtime in seconds
-        no_lsh (bool): *Don't* use Locality-Sensitive Hashing for faster searching
-        binding_sites_only: Use primer and probe binding sites to determine specificity
+        use_lsh (bool): Use Locality-Sensitive Hashing for faster searching
+        binding_sites_only (bool): Use primer and probe binding sites to determine specificity
+        std_kmer (bool): Use standard k-mer analysis
+        parallel_processes (Optional[int]): Number of parallel processes for k-mer analysis
         inclusion_sequences (Optional[List[SeqRecord]]): Pre-loaded inclusion sequences
         exclusion_sequences (Optional[List[SeqRecord]]): Pre-loaded exclusion sequences
-        
+        auto_gene_selection (bool): Automatically select optimal gene if gene_name not provided
+        gene_use_case (str): Use case for gene selection ('quantification', 'phylogeny', 'detection')
+        max_genes_to_try (int): Maximum number of genes to try in fallback strategy
+        min_gene_score (float): Minimum acceptable gene suitability score (0-1)
+
     Returns:
-        Dict[str, Any]: Marker region information
+        Dict[str, Any]: Marker region information including:
+            - marker_sequence: The identified marker sequence
+            - marker_length: Length of the marker
+            - conservation_score: Conservation score (0-1)
+            - specificity_score: Specificity score (0-1)
+            - selected_gene (if auto_gene_selection used): The gene that was selected
+            - gene_selection_info (if auto_gene_selection used): Details about gene selection
     """
     import time
     start_time = time.time()
-    
+
+    # Step 0: Auto-select gene if requested
+    gene_selection_info = None
+    candidate_genes = []
+
+    if auto_gene_selection and gene_name is None:
+        logger.info(f"Auto-selecting optimal gene for taxid {inclusion_taxid} (use_case: {gene_use_case})")
+
+        try:
+            # Get ranked list of candidate genes
+            ranked_genes = rank_candidate_genes(
+                taxid=inclusion_taxid,
+                email=email,
+                prefer_single_copy=(gene_use_case == 'quantification'),
+                max_genes_to_test=max_genes_to_try,
+                timeout_per_gene=30
+            )
+
+            if ranked_genes:
+                # Filter genes that meet minimum score threshold
+                suitable_genes = [
+                    (gene, info) for gene, info in ranked_genes
+                    if info.get('overall_score', 0) >= min_gene_score
+                ]
+
+                if suitable_genes:
+                    # Use the top-scoring gene
+                    gene_name, gene_info = suitable_genes[0]
+                    candidate_genes = [g for g, _ in suitable_genes[:max_genes_to_try]]
+
+                    gene_selection_info = {
+                        'selected_gene': gene_name,
+                        'gene_score': gene_info.get('overall_score', 0),
+                        'recommendation_tier': gene_info.get('recommendation_tier', 'unknown'),
+                        'fallback_genes': candidate_genes[1:] if len(candidate_genes) > 1 else [],
+                        'selection_method': 'auto_rank',
+                        'use_case': gene_use_case
+                    }
+
+                    logger.info(f"Auto-selected gene '{gene_name}' with score {gene_info.get('overall_score', 0):.2f} "
+                               f"({gene_info.get('recommendation_tier', 'unknown')} tier)")
+                    if candidate_genes[1:]:
+                        logger.info(f"Fallback genes available: {', '.join(candidate_genes[1:])}")
+                else:
+                    logger.warning(f"No genes met minimum score threshold ({min_gene_score})")
+                    gene_selection_info = {
+                        'error': f'No genes met minimum score threshold ({min_gene_score})',
+                        'selection_method': 'auto_rank',
+                        'use_case': gene_use_case
+                    }
+            else:
+                logger.warning("Auto-gene selection found no suitable genes")
+                gene_selection_info = {
+                    'error': 'No suitable genes found for this taxon',
+                    'selection_method': 'auto_rank',
+                    'use_case': gene_use_case
+                }
+
+        except Exception as e:
+            logger.error(f"Error during auto-gene selection: {str(e)}")
+            gene_selection_info = {
+                'error': f'Gene selection failed: {str(e)}',
+                'selection_method': 'auto_rank',
+                'use_case': gene_use_case
+            }
+
     # Step 1: Use pre-loaded inclusion sequences if provided, otherwise fetch them
     if inclusion_sequences is not None:
         logger.info(f"Using {len(inclusion_sequences)} pre-loaded inclusion sequences")
@@ -83,16 +169,46 @@ def hierarchical_marker_search(
                 )
             
             if not inclusion_sequences:
-                return {
+                error_result = {
                     "error": f"No sequences found for inclusion taxid {inclusion_taxid}" +
                              (f" with gene {gene_name}" if gene_name else "")
                 }
+                if gene_selection_info:
+                    error_result['gene_selection_info'] = gene_selection_info
+
+                # Try fallback gene if available
+                if candidate_genes and len(candidate_genes) > 1:
+                    logger.info(f"Trying fallback gene: {candidate_genes[1]}")
+                    return hierarchical_marker_search(
+                        inclusion_taxid=inclusion_taxid,
+                        email=email,
+                        gene_name=candidate_genes[1],  # Try next gene
+                        exclusion_taxids=exclusion_taxids,
+                        max_amplicon_length=max_amplicon_length,
+                        max_seq_count=max_seq_count,
+                        max_seq_length=max_seq_length,
+                        min_conservation=min_conservation,
+                        min_specificity=min_specificity,
+                        timeout_seconds=timeout_seconds,
+                        use_lsh=use_lsh,
+                        binding_sites_only=binding_sites_only,
+                        std_kmer=std_kmer,
+                        parallel_processes=parallel_processes,
+                        auto_gene_selection=False,  # Don't auto-select again
+                        max_genes_to_try=max_genes_to_try - 1,  # Decrement
+                        min_gene_score=min_gene_score
+                    )
+
+                return error_result
             
             logger.info(f"Retrieved {len(inclusion_sequences)} sequences for inclusion taxid")
         
         except Exception as e:
             logger.error(f"Error fetching inclusion sequences: {str(e)}")
-            return {"error": f"Error fetching inclusion sequences: {str(e)}"}
+            error_result = {"error": f"Error fetching inclusion sequences: {str(e)}"}
+            if gene_selection_info:
+                error_result['gene_selection_info'] = gene_selection_info
+            return error_result
     
     # Step 2: Find specific oligo sites within inclusion sequences only
     logger.info("Finding specific regions for primers and probe")
@@ -201,6 +317,10 @@ def hierarchical_marker_search(
         
         if "error" not in marker_result:
             logger.info("Found suitable binding sites for assay design")
+            if gene_selection_info:
+                marker_result['gene_selection_info'] = gene_selection_info
+            if gene_name and auto_gene_selection:
+                marker_result['selected_gene'] = gene_name
             return marker_result
         else:
             logger.info("Could not find suitable binding sites, falling back to standard approaches")
@@ -223,6 +343,10 @@ def hierarchical_marker_search(
             # If LSH found good markers, return them
             if "error" not in marker_result:
                 logger.info(f"LSH found marker in {time.time() - start_time:.2f} seconds")
+                if gene_selection_info:
+                    marker_result['gene_selection_info'] = gene_selection_info
+                if gene_name and auto_gene_selection:
+                    marker_result['selected_gene'] = gene_name
                 return marker_result
             else:
                 logger.info("LSH search did not find suitable markers, falling back to traditional methods")
@@ -240,7 +364,12 @@ def hierarchical_marker_search(
             min_amplicon_length=50,
             min_conservation=min_conservation
         )
-        
+
+        if gene_selection_info:
+            marker_result['gene_selection_info'] = gene_selection_info
+        if gene_name and auto_gene_selection:
+            marker_result['selected_gene'] = gene_name
+
         return marker_result
                                         
     # For case 2, try a different approach: family-level siblings
@@ -294,6 +423,10 @@ def hierarchical_marker_search(
             
             if "error" not in marker_result and marker_result.get("marker_sequence"):
                 logger.info(f"Found specific marker using family-level exclusion")
+                if gene_selection_info:
+                    marker_result['gene_selection_info'] = gene_selection_info
+                if gene_name and auto_gene_selection:
+                    marker_result['selected_gene'] = gene_name
                 return marker_result
     
     # If all else fails, return the original conserved marker
@@ -307,13 +440,20 @@ def hierarchical_marker_search(
             "marker_length": marker_length,
             "conservation_score": 1.0, # Only one sequence used
             "specificity_score": 0.0, # Unknown specificity
-            "description": "Fallback conserved marker (it's likely terrible, do your own validation please)"    
+            "description": "Fallback conserved marker (it's likely terrible, do your own validation please)"
         }
     else:
         # If there are no inclusion sequences, return an error
         conserved_marker = {
             "error": "No suitable marker found and no sequences available for fallback"
         }
+
+    # Add gene selection info to fallback result
+    if gene_selection_info:
+        conserved_marker['gene_selection_info'] = gene_selection_info
+    if gene_name and auto_gene_selection:
+        conserved_marker['selected_gene'] = gene_name
+
     logger.info("Returning best available marker (may not be fully specific, please validate)")
     return conserved_marker
 
