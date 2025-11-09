@@ -326,8 +326,8 @@ def get_taxon_info(taxid: str, email: str, api_key: Optional[str] = None) -> Dic
 
     try:
         logger.info(f"Fetching taxonomy information for taxid {taxid}")
-        # Note: taxonomy database doesn't require retmode parameter (defaults to XML)
-        handle = Entrez.efetch(db="taxonomy", id=taxid)
+        # Taxonomy database requires rettype="full" and retmode="xml" for XML format
+        handle = Entrez.efetch(db="taxonomy", id=taxid, rettype="full", retmode="xml")
         records = Entrez.read(handle)
         handle.close()
         
