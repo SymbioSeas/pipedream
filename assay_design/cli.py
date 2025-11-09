@@ -883,7 +883,8 @@ def main():
                 auto_gene_selection=args.auto_gene,
                 gene_use_case=args.gene_use_case,
                 max_genes_to_try=args.max_genes_to_try,
-                min_gene_score=args.min_gene_score
+                min_gene_score=args.min_gene_score,
+                api_key=getattr(args, 'api_key', None)
             )
 
             # Extract gene selection info if auto-gene was used

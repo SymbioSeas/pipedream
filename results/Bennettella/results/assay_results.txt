@@ -1,6 +1,6 @@
 === Assay Design Results ===
         
-Target: Taxid:216715 (taxid: 216715)
+Target: Taxid:1854 (taxid: 1854)
 
 
 ERROR: Could not design suitable assay

@@ -589,7 +589,8 @@ def evaluate_gene_suitability(
     taxid: str,
     gene_name: str,
     email: str,
-    metadata: Optional[GeneMetadata] = None
+    metadata: Optional[GeneMetadata] = None,
+    api_key: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Evaluate a specific gene for dPCR assay suitability by querying NCBI.
@@ -611,6 +612,7 @@ def evaluate_gene_suitability(
         gene_name: Gene to evaluate (e.g., 'rpoB', '16S ribosomal RNA')
         email: User's email for NCBI queries
         metadata: Pre-loaded gene metadata (optional, will look up if not provided)
+        api_key: NCBI API key for higher rate limits
 
     Returns:
         Dict[str, Any] with fields:
@@ -660,7 +662,8 @@ def evaluate_gene_suitability(
             taxid=taxid,
             gene_name=gene_name,
             email=email,
-            max_records=100  # Get up to 100 to get good average
+            max_records=100,  # Get up to 100 to get good average
+            api_key=api_key
         )
 
         sequence_count = len(sequences)
@@ -764,7 +767,8 @@ def rank_candidate_genes(
     domain: Optional[str] = None,
     prefer_single_copy: bool = True,
     max_genes_to_test: int = 10,
-    timeout_per_gene: int = 30
+    timeout_per_gene: int = 30,
+    api_key: Optional[str] = None
 ) -> List[Tuple[str, Dict[str, Any]]]:
     """
     Rank all candidate genes for a taxon by empirical sequence availability.
@@ -786,6 +790,7 @@ def rank_candidate_genes(
         max_genes_to_test: Maximum number of genes to evaluate via NCBI
                           (uses metadata-based pre-ranking to select top N)
         timeout_per_gene: Maximum seconds per gene (for NCBI queries)
+        api_key: NCBI API key for higher rate limits
 
     Returns:
         List of (gene_name, evaluation_dict) tuples, sorted by overall_score
@@ -811,7 +816,7 @@ def rank_candidate_genes(
     if domain is None:
         from .data_retrieval import get_taxon_info
         try:
-            tax_info = get_taxon_info(taxid, email)
+            tax_info = get_taxon_info(taxid, email, api_key=api_key)
             lineage = tax_info.get('lineage', '').lower()
 
             if 'bacteria' in lineage:
@@ -862,7 +867,8 @@ def rank_candidate_genes(
                 taxid=taxid,
                 gene_name=gene_name,
                 email=email,
-                metadata=metadata
+                metadata=metadata,
+                api_key=api_key
             )
 
             elapsed = time.time() - start_time

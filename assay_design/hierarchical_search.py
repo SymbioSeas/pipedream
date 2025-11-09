@@ -43,7 +43,8 @@ def hierarchical_marker_search(
     auto_gene_selection: bool = False,
     gene_use_case: str = 'quantification',
     max_genes_to_try: int = 3,
-    min_gene_score: float = 0.4
+    min_gene_score: float = 0.4,
+    api_key: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Perform a hierarchical search for marker regions.
@@ -68,6 +69,7 @@ def hierarchical_marker_search(
         gene_use_case (str): Use case for gene selection ('quantification', 'phylogeny', 'detection')
         max_genes_to_try (int): Maximum number of genes to try in fallback strategy
         min_gene_score (float): Minimum acceptable gene suitability score (0-1)
+        api_key (Optional[str]): NCBI API key for higher rate limits
 
     Returns:
         Dict[str, Any]: Marker region information including:
@@ -95,7 +97,8 @@ def hierarchical_marker_search(
                 email=email,
                 prefer_single_copy=(gene_use_case == 'quantification'),
                 max_genes_to_test=max_genes_to_try,
-                timeout_per_gene=30
+                timeout_per_gene=30,
+                api_key=api_key
             )
 
             if ranked_genes:
@@ -159,13 +162,15 @@ def hierarchical_marker_search(
                     taxid=inclusion_taxid,
                     gene_name=gene_name,
                     email=email,
-                    max_records=max_seq_count * 2
+                    max_records=max_seq_count * 2,
+                    api_key=api_key
                 )
             else:
                 inclusion_sequences = fetch_sequences_for_taxid(
                     taxid=inclusion_taxid,
                     email=email,
-                    max_records=max_seq_count * 2
+                    max_records=max_seq_count * 2,
+                    api_key=api_key
                 )
             
             if not inclusion_sequences:
@@ -196,7 +201,8 @@ def hierarchical_marker_search(
                         parallel_processes=parallel_processes,
                         auto_gene_selection=False,  # Don't auto-select again
                         max_genes_to_try=max_genes_to_try - 1,  # Decrement
-                        min_gene_score=min_gene_score
+                        min_gene_score=min_gene_score,
+                        api_key=api_key
                     )
 
                 return error_result
@@ -240,7 +246,8 @@ def hierarchical_marker_search(
             email=email,
             relationship="sibling",
             rank="genus",
-            max_results=3
+            max_results=3,
+            api_key=api_key
         )
         
         genus_taxids = [taxon.get("taxid") for taxon in genus_siblings 
@@ -256,7 +263,8 @@ def hierarchical_marker_search(
                     seqs = fetch_sequences_for_taxid(
                         taxid=taxid,
                         email=email,
-                        max_records=max_seq_count // 2
+                        max_records=max_seq_count // 2,
+                        api_key=api_key
                     )
                     genus_exclusion_seqs.extend(seqs)
                     logger.info(f"Retrieved {len(seqs)} sequences for exclusion taxid {taxid}")
@@ -282,14 +290,15 @@ def hierarchical_marker_search(
                     gene_name=gene_name,
                     email=email,
                     max_records=max_seq_count // 2,
-                    allow_wgs=True
+                    allow_wgs=True,
+                    api_key=api_key
                 )
             else:
                 sequences = fetch_sequences_for_taxid(
                     taxid=taxid,
                     email=email,
                     max_records=max_seq_count // 2,
-                    allow_wgs=True
+                    api_key=api_key
                 )
                 
                 # Preprocess these sequences
@@ -375,13 +384,14 @@ def hierarchical_marker_search(
     # For case 2, try a different approach: family-level siblings
     if not exclusion_taxids and time.time() - start_time < timeout_seconds:
         logger.info("Trying family-level siblings for additional specificity")
-        
+
         family_siblings = get_related_taxa(
             taxid=inclusion_taxid,
             email=email,
             relationship="sibling",
             rank="family",
-            max_results=3
+            max_results=3,
+            api_key=api_key
         )
         
         family_taxids = [taxon.get("taxid") for taxon in family_siblings 
@@ -397,7 +407,8 @@ def hierarchical_marker_search(
                     seqs = fetch_sequences_for_taxid(
                         taxid=taxid,
                         email=email,
-                        max_records=max_seq_count // 2
+                        max_records=max_seq_count // 2,
+                        api_key=api_key
                     )
                     family_exclusion_seqs.extend(seqs)
                     logger.info(f"Retrieved {len(seqs)} sequences for family exclusion taxid {taxid}")
