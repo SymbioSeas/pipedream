@@ -15,6 +15,41 @@ cache_manager = SequenceCacheManager()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def _clean_api_key(api_key: Optional[str]) -> Optional[str]:
+    """
+    Clean and validate an NCBI API key.
+
+    Removes whitespace, newlines, and validates format.
+
+    Args:
+        api_key: Raw API key string (may contain whitespace)
+
+    Returns:
+        Cleaned API key or None if invalid
+    """
+    if not api_key:
+        return None
+
+    # Strip all whitespace and newlines
+    cleaned = api_key.strip()
+
+    # Log if whitespace was removed
+    if cleaned != api_key:
+        logger.debug(f"API key had whitespace/newlines removed (length: {len(api_key)} -> {len(cleaned)})")
+
+    # Validate: NCBI API keys are typically 36 characters (hexadecimal with hyphens)
+    # Example format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    if not cleaned:
+        logger.warning("API key is empty after cleaning")
+        return None
+
+    # Basic validation: should be alphanumeric with hyphens
+    import re
+    if not re.match(r'^[a-fA-F0-9-]+$', cleaned):
+        logger.warning(f"API key contains invalid characters (expected hex digits and hyphens)")
+
+    return cleaned
+
 def fetch_sequence_by_accession(accession_id: str, email: str, db: str = "nucleotide", api_key: Optional[str] = None) -> SeqIO.SeqRecord:
     """
     Fetch a single sequence by accession from NCBI.
@@ -35,8 +70,9 @@ def fetch_sequence_by_accession(accession_id: str, email: str, db: str = "nucleo
     if not email:
         raise ValueError("You must provide a valid email address to comply with NCBI's usage policies.")
 
-    # Set NCBI Entrez parameters
+    # Clean and set NCBI Entrez parameters
     Entrez.email = email
+    api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
 
@@ -86,6 +122,7 @@ def fetch_sequences_for_taxid(
         raise ValueError("Email address is required.")
 
     Entrez.email = email
+    api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
     
@@ -280,6 +317,7 @@ def get_taxon_info(taxid: str, email: str, api_key: Optional[str] = None) -> Dic
         raise ValueError("Email address is required.")
 
     Entrez.email = email
+    api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
 
@@ -351,6 +389,7 @@ def get_related_taxa(
         raise ValueError("Email address is required.")
 
     Entrez.email = email
+    api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
 
@@ -455,6 +494,7 @@ def get_related_taxa_weighted(
         diversity_levels = ["genus", "family", "order"]
 
     Entrez.email = email
+    api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
 
@@ -613,6 +653,7 @@ def _estimate_sequence_count(taxid: str, email: str, timeout: int = 5, api_key: 
         int: Estimated sequence count
     """
     Entrez.email = email
+    api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
 
@@ -764,6 +805,7 @@ def intelligent_exclusion_selection(
         tier_allocation = {"genus": 0.5, "family": 0.3, "order": 0.2}
 
     Entrez.email = email
+    api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
 
@@ -1095,9 +1137,10 @@ def fetch_cds_sequences(
         raise ValueError("Email address is required for NCBI queries")
 
     Entrez.email = email
+    api_key = _clean_api_key(api_key)
     if api_key:
         Entrez.api_key = api_key
-    
+
     # Generate output filename if not provided
     if not output_file:
         output_file = f"{cds_name}_refseq_{max_seqs}.fna"
